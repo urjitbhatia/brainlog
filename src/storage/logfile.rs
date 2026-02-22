@@ -231,6 +231,21 @@ fn read_one_frame(file: &mut std::fs::File) -> Result<Option<Frame>> {
     }))
 }
 
+/// Returns (stdout, stderr, stdin, combined) file sizes in bytes for a log directory.
+pub fn log_sizes(log_dir: &Path) -> (u64, u64, u64, u64) {
+    let size = |name: &str| -> u64 {
+        std::fs::metadata(log_dir.join(name))
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
+    (
+        size("stdout.log"),
+        size("stderr.log"),
+        size("stdin.log"),
+        size("combined.log"),
+    )
+}
+
 pub fn frames_to_text(frames: &[Frame]) -> String {
     let mut output = String::new();
     for frame in frames {
@@ -252,4 +267,198 @@ pub fn frames_to_bytes(frames: &[Frame], max_bytes: usize) -> (Vec<u8>, bool) {
         output.extend_from_slice(&frame.payload);
     }
     (output, has_more)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_frame(stream: StreamType, payload: &[u8], ts: u64) -> Frame {
+        Frame {
+            timestamp_ns: ts,
+            stream_type: stream,
+            payload: payload.to_vec(),
+        }
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let frame = make_frame(StreamType::Stdout, b"hello world", 123456789);
+        let encoded = encode_frame(&frame);
+
+        let mut cursor = std::io::Cursor::new(encoded);
+        // Cursor implements Read, but read_one_frame needs File. Use manual decode.
+        let mut header = [0u8; FRAME_HEADER_SIZE];
+        std::io::Read::read_exact(&mut cursor, &mut header).unwrap();
+
+        let ts = u64::from_le_bytes(header[0..8].try_into().unwrap());
+        let st = StreamType::from_u8(header[8]).unwrap();
+        let len = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
+
+        let mut payload = vec![0u8; len];
+        std::io::Read::read_exact(&mut cursor, &mut payload).unwrap();
+
+        assert_eq!(ts, 123456789);
+        assert_eq!(st, StreamType::Stdout);
+        assert_eq!(payload, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn writer_reader_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        tx.send(make_frame(StreamType::Stdout, b"out1\n", 1000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stderr, b"err1\n", 2000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdin, b"in1\n", 3000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"out2\n", 4000)).await.unwrap();
+        drop(tx);
+
+        writer.run().await.unwrap();
+
+        // Read stdout
+        let reader = LogReader::new(dir.path(), "stdout");
+        let frames = reader.read_frames().unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].payload, b"out1\n");
+        assert_eq!(frames[1].payload, b"out2\n");
+
+        // Read stderr
+        let reader = LogReader::new(dir.path(), "stderr");
+        let frames = reader.read_frames().unwrap();
+        assert_eq!(frames.len(), 1);
+
+        // Read combined
+        let reader = LogReader::new(dir.path(), "combined");
+        let frames = reader.read_frames().unwrap();
+        assert_eq!(frames.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn head_and_tail() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        for i in 0..5 {
+            tx.send(make_frame(StreamType::Stdout, format!("line{}\n", i).as_bytes(), i * 1000))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let reader = LogReader::new(dir.path(), "stdout");
+
+        let head = reader.read_head(2).unwrap();
+        assert_eq!(head.len(), 2);
+        assert_eq!(head[0].payload, b"line0\n");
+        assert_eq!(head[1].payload, b"line1\n");
+
+        let tail = reader.read_tail(2).unwrap();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].payload, b"line3\n");
+        assert_eq!(tail[1].payload, b"line4\n");
+    }
+
+    #[tokio::test]
+    async fn read_range_filters_by_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        for i in 0..5u64 {
+            tx.send(make_frame(StreamType::Stdout, format!("f{}", i).as_bytes(), i * 1000))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let reader = LogReader::new(dir.path(), "stdout");
+        let range = reader.read_range(Some(1000), Some(3000)).unwrap();
+        assert_eq!(range.len(), 3); // timestamps 1000, 2000, 3000
+    }
+
+    #[tokio::test]
+    async fn search_matches_pattern() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        tx.send(make_frame(StreamType::Stdout, b"INFO: started\n", 1000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"ERROR: failed\n", 2000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"INFO: done\n", 3000)).await.unwrap();
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let reader = LogReader::new(dir.path(), "stdout");
+        let pattern = regex::Regex::new("ERROR").unwrap();
+        let matches = reader.search(&pattern, 10).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].line.contains("ERROR"));
+    }
+
+    #[tokio::test]
+    async fn log_sizes_returns_file_sizes() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        tx.send(make_frame(StreamType::Stdout, b"hello", 1000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stderr, b"world", 2000)).await.unwrap();
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let (stdout_sz, stderr_sz, stdin_sz, combined_sz) = log_sizes(dir.path());
+        assert!(stdout_sz > 0);
+        assert!(stderr_sz > 0);
+        assert_eq!(stdin_sz, 0); // file created but no stdin frames written
+        assert!(combined_sz > 0);
+    }
+
+    #[test]
+    fn log_sizes_missing_dir() {
+        let (a, b, c, d) = log_sizes(Path::new("/nonexistent/path"));
+        assert_eq!((a, b, c, d), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn file_size_missing_file() {
+        let reader = LogReader::new(Path::new("/nonexistent"), "stdout");
+        assert_eq!(reader.file_size().unwrap(), 0);
+    }
+
+    #[test]
+    fn frames_to_text_concatenates() {
+        let frames = vec![
+            make_frame(StreamType::Stdout, b"hello ", 1),
+            make_frame(StreamType::Stdout, b"world", 2),
+        ];
+        assert_eq!(frames_to_text(&frames), "hello world");
+    }
+
+    #[test]
+    fn frames_to_bytes_respects_limit() {
+        let frames = vec![
+            make_frame(StreamType::Stdout, b"aaaa", 1),
+            make_frame(StreamType::Stdout, b"bbbb", 2),
+            make_frame(StreamType::Stdout, b"cccc", 3),
+        ];
+        let (bytes, has_more) = frames_to_bytes(&frames, 6);
+        assert_eq!(bytes, b"aaaa");
+        assert!(has_more);
+    }
 }

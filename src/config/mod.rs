@@ -152,3 +152,51 @@ impl Config {
         self.storage.base_dir.join("logs")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_values() {
+        let config = Config::default();
+        assert!(config.port_detection.enabled);
+        assert_eq!(config.port_detection.poll_interval_secs, 2);
+        assert_eq!(config.port_detection.method, "lsof");
+        assert_eq!(config.capture.flush_interval_ms, 100);
+        assert_eq!(config.capture.flush_buffer_bytes, 65536);
+        assert_eq!(config.llm.timeout_secs, 30);
+        assert!(config.llm.provider.is_none());
+        assert!(config.enrichment.enabled);
+    }
+
+    #[test]
+    fn db_path_under_base_dir() {
+        let config = Config::default();
+        let db_path = config.db_path();
+        assert!(db_path.ends_with("brainlog.db"));
+        assert!(db_path.starts_with(config.base_dir()));
+    }
+
+    #[test]
+    fn logs_dir_under_base_dir() {
+        let config = Config::default();
+        let logs = config.logs_dir();
+        assert!(logs.ends_with("logs"));
+        assert!(logs.starts_with(config.base_dir()));
+    }
+
+    #[test]
+    fn config_path_is_yaml() {
+        let path = Config::config_path();
+        assert!(path.ends_with("config.yaml"));
+    }
+
+    #[test]
+    fn enrichment_defaults() {
+        let config = Config::default();
+        assert!(config.enrichment.project_file_patterns.contains(&"Cargo.toml".to_string()));
+        assert!(config.enrichment.project_file_patterns.contains(&"package.json".to_string()));
+        assert_eq!(config.enrichment.max_file_preview_bytes, 2048);
+    }
+}

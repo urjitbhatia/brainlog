@@ -98,7 +98,9 @@ pub struct SearchArgs {
 }
 
 /// Known subcommand names for direct mode detection
-pub const KNOWN_SUBCOMMANDS: &[&str] = &["run", "list", "logs", "search", "mcp", "help", "--help", "-h", "--version", "-V"];
+pub const KNOWN_SUBCOMMANDS: &[&str] = &[
+    "run", "list", "logs", "search", "mcp", "help", "--help", "-h", "--version", "-V",
+];
 
 /// Parse direct mode arguments from argv.
 /// Returns (RunArgs, remaining) if argv[1] is not a known subcommand.
@@ -164,4 +166,82 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
         desc,
         command,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn direct_mode_simple_command() {
+        let result = parse_direct_mode(&args(&["brainlog", "node", "server.js"]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.command, vec!["node", "server.js"]);
+        assert!(run_args.name.is_none());
+    }
+
+    #[test]
+    fn direct_mode_with_name_flag() {
+        let result = parse_direct_mode(&args(&["brainlog", "-n", "my-app", "python", "app.py"]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.name.as_deref(), Some("my-app"));
+        assert_eq!(run_args.command, vec!["python", "app.py"]);
+    }
+
+    #[test]
+    fn direct_mode_with_all_flags() {
+        let result = parse_direct_mode(&args(&[
+            "brainlog",
+            "--name",
+            "svc",
+            "--tag",
+            "env:prod",
+            "--desc",
+            "my service",
+            "cargo",
+            "run",
+        ]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.name.as_deref(), Some("svc"));
+        assert_eq!(run_args.tag, vec!["env:prod"]);
+        assert_eq!(run_args.desc.as_deref(), Some("my service"));
+        assert_eq!(run_args.command, vec!["cargo", "run"]);
+    }
+
+    #[test]
+    fn known_subcommand_returns_none() {
+        for cmd in KNOWN_SUBCOMMANDS {
+            let result = parse_direct_mode(&args(&["brainlog", cmd]));
+            assert!(result.is_none(), "Should return None for subcommand: {}", cmd);
+        }
+    }
+
+    #[test]
+    fn too_few_args_returns_none() {
+        assert!(parse_direct_mode(&args(&["brainlog"])).is_none());
+        assert!(parse_direct_mode(&args(&[])).is_none());
+    }
+
+    #[test]
+    fn flag_without_value_becomes_command() {
+        // --name with no value => break out of flag parsing, "--name" treated as the command
+        let result = parse_direct_mode(&args(&["brainlog", "--name"]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.command, vec!["--name"]);
+        assert!(run_args.name.is_none());
+    }
+
+    #[test]
+    fn multiple_tags() {
+        let result = parse_direct_mode(&args(&[
+            "brainlog", "-t", "env:prod", "-t", "team:backend", "echo", "hi",
+        ]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.tag, vec!["env:prod", "team:backend"]);
+        assert_eq!(run_args.command, vec!["echo", "hi"]);
+    }
 }

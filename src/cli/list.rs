@@ -1,8 +1,20 @@
 use anyhow::Result;
+use std::path::Path;
 
 use crate::cli::ListArgs;
 use crate::config::Config;
+use crate::storage::logfile::log_sizes;
 use crate::storage::Database;
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
 
 pub async fn handle_list(args: ListArgs) -> Result<()> {
     let config = Config::load()?;
@@ -17,6 +29,13 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     if services.is_empty() {
         println!("No services found.");
         return Ok(());
+    }
+
+    if !args.verbose {
+        println!(
+            "{:<8}  {:<20}  {:<12}  {}",
+            "ID", "NAME", "STATUS", "COMMAND"
+        );
     }
 
     for service in &services {
@@ -48,6 +67,19 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
                     "Latest Run:  {} ({})",
                     run.id[..8].to_string(),
                     run.status.as_str()
+                );
+                println!("Started At:  {}", run.started_at);
+                if let Some(exit_code) = run.exit_code {
+                    println!("Exit Code:   {}", exit_code);
+                }
+                let (stdout_sz, stderr_sz, stdin_sz, combined_sz) =
+                    log_sizes(Path::new(&run.log_dir));
+                println!(
+                    "Log Sizes:   stdout={} stderr={} stdin={} combined={}",
+                    format_bytes(stdout_sz),
+                    format_bytes(stderr_sz),
+                    format_bytes(stdin_sz),
+                    format_bytes(combined_sz),
                 );
             }
             println!("---");

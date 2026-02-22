@@ -58,3 +58,53 @@ pub fn initialize(conn: &Connection) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn schema_init_creates_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        // Verify all four tables exist
+        for table in &["services", "runs", "tags", "ports"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{}'",
+                        table
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "Table {} should exist", table);
+        }
+    }
+
+    #[test]
+    fn schema_init_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+        // Second call should succeed without error
+        initialize(&conn).unwrap();
+    }
+
+    #[test]
+    fn schema_has_indexes() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(count >= 5, "Expected at least 5 indexes, got {}", count);
+    }
+}

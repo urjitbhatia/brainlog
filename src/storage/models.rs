@@ -134,3 +134,69 @@ pub struct Frame {
     pub stream_type: StreamType,
     pub payload: Vec<u8>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enrichment_status_roundtrip() {
+        for (s, expected) in [
+            ("pending", EnrichmentStatus::Pending),
+            ("completed", EnrichmentStatus::Completed),
+            ("failed", EnrichmentStatus::Failed),
+            ("skipped", EnrichmentStatus::Skipped),
+        ] {
+            let status = EnrichmentStatus::from_str(s);
+            assert_eq!(status, expected);
+            assert_eq!(status.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn enrichment_status_unknown_defaults_to_pending() {
+        let status = EnrichmentStatus::from_str("garbage");
+        assert_eq!(status, EnrichmentStatus::Pending);
+    }
+
+    #[test]
+    fn run_status_roundtrip() {
+        for (s, expected) in [
+            ("running", RunStatus::Running),
+            ("completed", RunStatus::Completed),
+            ("failed", RunStatus::Failed),
+            ("crashed", RunStatus::Crashed),
+        ] {
+            let status = RunStatus::from_str(s);
+            assert_eq!(status, expected);
+            assert_eq!(status.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn run_status_unknown_defaults_to_running() {
+        let status = RunStatus::from_str("xyz");
+        assert_eq!(status, RunStatus::Running);
+    }
+
+    #[test]
+    fn stream_type_roundtrip() {
+        for (byte, expected, name) in [
+            (0x01, StreamType::Stdout, "stdout"),
+            (0x02, StreamType::Stderr, "stderr"),
+            (0x03, StreamType::Stdin, "stdin"),
+        ] {
+            let st = StreamType::from_u8(byte).unwrap();
+            assert_eq!(st, expected);
+            assert_eq!(st.as_str(), name);
+            assert_eq!(st as u8, byte);
+        }
+    }
+
+    #[test]
+    fn stream_type_invalid_byte() {
+        assert!(StreamType::from_u8(0x00).is_none());
+        assert!(StreamType::from_u8(0x04).is_none());
+        assert!(StreamType::from_u8(0xFF).is_none());
+    }
+}

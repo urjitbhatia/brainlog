@@ -33,8 +33,8 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
 
     if !args.verbose {
         println!(
-            "{:<8}  {:<20}  {:<12}  {}",
-            "ID", "NAME", "STATUS", "COMMAND"
+            "{:<8}  {:<20}  {:<12}  COMMAND",
+            "ID", "NAME", "STATUS"
         );
     }
 
@@ -64,7 +64,7 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             if let Some(run) = db.get_latest_run(&service.id)? {
                 println!(
                     "Latest Run:  {} ({})",
-                    run.id[..8].to_string(),
+                    &run.id[..8],
                     run.status.as_str()
                 );
                 println!("Started At:  {}", run.started_at);

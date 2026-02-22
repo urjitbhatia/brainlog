@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub llm: LlmConfig,
     pub storage: StorageConfig,
@@ -12,17 +13,6 @@ pub struct Config {
     pub enrichment: EnrichmentConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            llm: LlmConfig::default(),
-            storage: StorageConfig::default(),
-            port_detection: PortDetectionConfig::default(),
-            capture: CaptureConfig::default(),
-            enrichment: EnrichmentConfig::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

@@ -33,7 +33,7 @@ impl EnrichmentStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "completed" => Self::Completed,
             "failed" => Self::Failed,
@@ -74,7 +74,7 @@ impl RunStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "completed" => Self::Completed,
             "failed" => Self::Failed,
@@ -147,7 +147,7 @@ mod tests {
             ("failed", EnrichmentStatus::Failed),
             ("skipped", EnrichmentStatus::Skipped),
         ] {
-            let status = EnrichmentStatus::from_str(s);
+            let status = EnrichmentStatus::parse(s);
             assert_eq!(status, expected);
             assert_eq!(status.as_str(), s);
         }
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn enrichment_status_unknown_defaults_to_pending() {
-        let status = EnrichmentStatus::from_str("garbage");
+        let status = EnrichmentStatus::parse("garbage");
         assert_eq!(status, EnrichmentStatus::Pending);
     }
 
@@ -167,7 +167,7 @@ mod tests {
             ("failed", RunStatus::Failed),
             ("crashed", RunStatus::Crashed),
         ] {
-            let status = RunStatus::from_str(s);
+            let status = RunStatus::parse(s);
             assert_eq!(status, expected);
             assert_eq!(status.as_str(), s);
         }
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn run_status_unknown_defaults_to_running() {
-        let status = RunStatus::from_str("xyz");
+        let status = RunStatus::parse("xyz");
         assert_eq!(status, RunStatus::Running);
     }
 

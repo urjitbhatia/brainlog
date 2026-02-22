@@ -217,7 +217,7 @@ impl Database {
              FROM services ORDER BY updated_at DESC",
         )?;
         let services = stmt
-            .query_map([], |row| row_to_service_rusqlite(row))?
+            .query_map([], row_to_service_rusqlite)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to list services")?;
         Ok(services)
@@ -229,7 +229,7 @@ impl Database {
              FROM runs WHERE service_id = ?1 ORDER BY started_at DESC",
         )?;
         let runs = stmt
-            .query_map(params![service_id], |row| row_to_run_rusqlite(row))?
+            .query_map(params![service_id], row_to_run_rusqlite)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to list runs")?;
         Ok(runs)
@@ -264,11 +264,11 @@ impl Database {
             conditions.push(format!("({})", tag_conds.join(" OR ")));
         }
 
-        if port.is_some() {
+        if let Some(port_val) = port {
             joins.push(" JOIN runs r ON r.service_id = s.id JOIN ports p ON p.run_id = r.id");
             let idx = param_values.len() + 1;
             conditions.push(format!("p.port = ?{}", idx));
-            param_values.push(Box::new(port.unwrap() as i64));
+            param_values.push(Box::new(port_val as i64));
         }
 
         if let Some(name_filter) = name {
@@ -310,7 +310,7 @@ impl Database {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let services = stmt
-            .query_map(params_refs.as_slice(), |row| row_to_service_rusqlite(row))?
+            .query_map(params_refs.as_slice(), row_to_service_rusqlite)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search services")?;
         Ok(services)
@@ -576,7 +576,7 @@ fn row_to_service_rusqlite(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite:
         updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
             .unwrap_or_default()
             .with_timezone(&chrono::Utc),
-        enrichment_status: EnrichmentStatus::from_str(&enrichment_str),
+        enrichment_status: EnrichmentStatus::parse(&enrichment_str),
     })
 }
 
@@ -603,6 +603,6 @@ fn row_to_run_rusqlite(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> 
         }),
         exit_code: row.get(5)?,
         log_dir: row.get(6)?,
-        status: RunStatus::from_str(&status_str),
+        status: RunStatus::parse(&status_str),
     })
 }

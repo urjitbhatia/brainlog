@@ -15,9 +15,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
 
-    let working_dir = std::env::current_dir()?
-        .to_string_lossy()
-        .to_string();
+    let working_dir = std::env::current_dir()?.to_string_lossy().to_string();
     let executable = args.command[0].clone();
 
     // Find or create service

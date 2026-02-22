@@ -27,7 +27,10 @@ pub async fn detect_ports(pid: u32) -> Vec<u16> {
         if let Some(name) = parts.last() {
             // Handle "(LISTEN)" being separate or attached
             let name_part = if *name == "(LISTEN)" {
-                parts.get(parts.len().wrapping_sub(2)).copied().unwrap_or("")
+                parts
+                    .get(parts.len().wrapping_sub(2))
+                    .copied()
+                    .unwrap_or("")
             } else {
                 name
             };

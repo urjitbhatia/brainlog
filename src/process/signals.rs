@@ -5,9 +5,7 @@ use signal_hook::consts::*;
 use signal_hook_tokio::Signals;
 use tokio_stream::StreamExt;
 
-const FORWARDED_SIGNALS: &[i32] = &[
-    SIGINT, SIGTERM, SIGQUIT, SIGHUP, SIGUSR1, SIGUSR2, SIGCONT,
-];
+const FORWARDED_SIGNALS: &[i32] = &[SIGINT, SIGTERM, SIGQUIT, SIGHUP, SIGUSR1, SIGUSR2, SIGCONT];
 
 pub async fn forward_signals(child_pid: u32) -> Result<()> {
     let mut signals = Signals::new(FORWARDED_SIGNALS)?;

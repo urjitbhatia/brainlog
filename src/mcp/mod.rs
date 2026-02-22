@@ -2,10 +2,9 @@ pub mod tools;
 pub mod types;
 
 use rmcp::{
-    ServerHandler, tool, tool_handler, tool_router,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    ErrorData as McpError,
+    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use std::path::PathBuf;
 
@@ -39,7 +38,9 @@ impl BrainlogMcp {
     }
 
     /// Discover tracked services. Filter by name, tags, port, executable, or status.
-    #[tool(description = "Discover tracked services. Filter by name, tags, port, executable, or status. Returns service metadata, latest run info, and detected ports.")]
+    #[tool(
+        description = "Discover tracked services. Filter by name, tags, port, executable, or status. Returns service metadata, latest run info, and detected ports."
+    )]
     async fn discover_services(
         &self,
         params: Parameters<DiscoverServicesParams>,
@@ -55,7 +56,9 @@ impl BrainlogMcp {
     }
 
     /// Get logs for a service or run.
-    #[tool(description = "Get logs for a service or run. Supports head/tail/range modes with configurable line count and max bytes.")]
+    #[tool(
+        description = "Get logs for a service or run. Supports head/tail/range modes with configurable line count and max bytes."
+    )]
     async fn get_logs(
         &self,
         params: Parameters<GetLogsParams>,
@@ -71,7 +74,9 @@ impl BrainlogMcp {
     }
 
     /// Search logs across services using regex patterns.
-    #[tool(description = "Search logs across services using regex patterns. Returns matching lines with timestamps and context.")]
+    #[tool(
+        description = "Search logs across services using regex patterns. Returns matching lines with timestamps and context."
+    )]
     async fn search_logs(
         &self,
         params: Parameters<SearchLogsParams>,

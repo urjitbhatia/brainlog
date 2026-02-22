@@ -19,10 +19,7 @@ pub struct PtyResult {
     pub pid: u32,
 }
 
-pub async fn spawn_pty(
-    command: &[String],
-    tx: mpsc::Sender<Frame>,
-) -> Result<PtyResult> {
+pub async fn spawn_pty(command: &[String], tx: mpsc::Sender<Frame>) -> Result<PtyResult> {
     let (program, _args) = command.split_first().expect("command must not be empty");
 
     // Save terminal state before forkpty
@@ -33,15 +30,12 @@ pub async fn spawn_pty(
     };
 
     // forkpty - returns an enum in nix 0.29
-    let fork_result = unsafe {
-        nix::pty::forkpty(None, None)?
-    };
+    let fork_result = unsafe { nix::pty::forkpty(None, None)? };
 
     match fork_result {
         ForkptyResult::Child => {
             // In child: exec the target command
-            let c_program = CString::new(program.as_str())
-                .context("Invalid program name")?;
+            let c_program = CString::new(program.as_str()).context("Invalid program name")?;
             let c_args: Vec<CString> = command
                 .iter()
                 .map(|a| CString::new(a.as_str()).unwrap())
@@ -58,11 +52,7 @@ pub async fn spawn_pty(
             if saved_termios.is_some() {
                 if let Ok(mut raw) = termios::tcgetattr(std::io::stdin()) {
                     termios::cfmakeraw(&mut raw);
-                    let _ = termios::tcsetattr(
-                        std::io::stdin(),
-                        termios::SetArg::TCSANOW,
-                        &raw,
-                    );
+                    let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
                 }
             }
 
@@ -71,11 +61,7 @@ pub async fn spawn_pty(
 
             // Restore terminal
             if let Some(saved) = saved_termios {
-                let _ = termios::tcsetattr(
-                    std::io::stdin(),
-                    termios::SetArg::TCSANOW,
-                    &saved,
-                );
+                let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &saved);
             }
 
             result.map(|exit_code| PtyResult {
@@ -86,11 +72,7 @@ pub async fn spawn_pty(
     }
 }
 
-async fn run_pty_pump(
-    master: OwnedFd,
-    child: Pid,
-    tx: mpsc::Sender<Frame>,
-) -> Result<Option<i32>> {
+async fn run_pty_pump(master: OwnedFd, child: Pid, tx: mpsc::Sender<Frame>) -> Result<Option<i32>> {
     let master_raw = master.as_raw_fd();
 
     // We need to dup the fd for the write side
@@ -114,10 +96,7 @@ async fn run_pty_pump(
                 Ok(0) => break,
                 Ok(n) => {
                     let payload = buf[..n].to_vec();
-                    let _ = std::io::Write::write_all(
-                        &mut std::io::stdout().lock(),
-                        &payload,
-                    );
+                    let _ = std::io::Write::write_all(&mut std::io::stdout().lock(), &payload);
                     let _ = tx_read.blocking_send(Frame {
                         timestamp_ns: now_ns(),
                         stream_type: StreamType::Stdout,
@@ -168,10 +147,7 @@ async fn run_pty_pump(
                 Ok(0) => break,
                 Ok(n) => {
                     let payload = buf[..n].to_vec();
-                    match write(
-                        unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) },
-                        &payload,
-                    ) {
+                    match write(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }, &payload) {
                         Ok(_) => {}
                         Err(nix::errno::Errno::EIO) => break,
                         Err(_) => break,
@@ -214,10 +190,7 @@ async fn run_pty_pump(
     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
     read_handle.abort();
     // write_handle should exit on its own due to the done flag, but give it a moment
-    let _ = tokio::time::timeout(
-        tokio::time::Duration::from_millis(200),
-        write_handle,
-    ).await;
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(200), write_handle).await;
 
     drop(tx);
 

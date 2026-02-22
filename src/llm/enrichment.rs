@@ -97,12 +97,8 @@ pub async fn enrich_service(
         Err(e) => {
             warn!("LLM enrichment failed: {}", e);
             if let Ok(db) = Database::open(&config.db_path()) {
-                let _ = db.update_service_enrichment(
-                    service_id,
-                    None,
-                    None,
-                    &EnrichmentStatus::Failed,
-                );
+                let _ =
+                    db.update_service_enrichment(service_id, None, None, &EnrichmentStatus::Failed);
             }
         }
     }

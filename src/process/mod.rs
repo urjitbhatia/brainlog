@@ -15,10 +15,7 @@ pub struct SpawnResult {
 }
 
 /// Spawn a wrapped child process. Uses PTY if stdin is a terminal, otherwise pipes.
-pub async fn spawn_wrapped(
-    command: &[String],
-    tx: mpsc::Sender<Frame>,
-) -> Result<SpawnResult> {
+pub async fn spawn_wrapped(command: &[String], tx: mpsc::Sender<Frame>) -> Result<SpawnResult> {
     let use_pty = std::io::stdin().is_terminal();
 
     if use_pty {

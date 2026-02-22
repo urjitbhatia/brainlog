@@ -40,10 +40,7 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
 
     for service in &services {
         let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
-        let desc_display = service
-            .description
-            .as_deref()
-            .unwrap_or("(no description)");
+        let desc_display = service.description.as_deref().unwrap_or("(no description)");
 
         if args.verbose {
             println!("ID:          {}", service.id);
@@ -57,8 +54,10 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
 
             let tags = db.get_tags(&service.id)?;
             if !tags.is_empty() {
-                let tag_strs: Vec<String> =
-                    tags.iter().map(|t| format!("{}:{}", t.key, t.value)).collect();
+                let tag_strs: Vec<String> = tags
+                    .iter()
+                    .map(|t| format!("{}:{}", t.key, t.value))
+                    .collect();
                 println!("Tags:        {}", tag_strs.join(", "));
             }
 

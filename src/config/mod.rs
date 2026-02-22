@@ -195,8 +195,14 @@ mod tests {
     #[test]
     fn enrichment_defaults() {
         let config = Config::default();
-        assert!(config.enrichment.project_file_patterns.contains(&"Cargo.toml".to_string()));
-        assert!(config.enrichment.project_file_patterns.contains(&"package.json".to_string()));
+        assert!(config
+            .enrichment
+            .project_file_patterns
+            .contains(&"Cargo.toml".to_string()));
+        assert!(config
+            .enrichment
+            .project_file_patterns
+            .contains(&"package.json".to_string()));
         assert_eq!(config.enrichment.max_file_preview_bytes, 2048);
     }
 }

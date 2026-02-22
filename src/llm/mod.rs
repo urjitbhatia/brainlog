@@ -31,22 +31,26 @@ pub fn create_client(config: &LlmConfig) -> Option<Box<dyn LlmClient>> {
             Some(Box::new(openai::OpenAiClient::new(
                 base_url,
                 config.api_key.clone(),
-                config.model.clone().unwrap_or_else(|| "llama3.2:3b".to_string()),
+                config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "llama3.2:3b".to_string()),
                 config.timeout_secs,
             )))
         }
         "openai" | "openrouter" | "gemini" => {
-            let base_url = config.base_url.clone().unwrap_or_else(|| {
-                match provider {
-                    "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-                    "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
-                    _ => "https://api.openai.com/v1".to_string(),
-                }
+            let base_url = config.base_url.clone().unwrap_or_else(|| match provider {
+                "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+                "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+                _ => "https://api.openai.com/v1".to_string(),
             });
             Some(Box::new(openai::OpenAiClient::new(
                 base_url,
                 config.api_key.clone(),
-                config.model.clone().unwrap_or_else(|| "gpt-4o-mini".to_string()),
+                config
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| "gpt-4o-mini".to_string()),
                 config.timeout_secs,
             )))
         }
@@ -56,7 +60,10 @@ pub fn create_client(config: &LlmConfig) -> Option<Box<dyn LlmClient>> {
                 Some(Box::new(openai::OpenAiClient::new(
                     base_url.clone(),
                     config.api_key.clone(),
-                    config.model.clone().unwrap_or_else(|| "default".to_string()),
+                    config
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
                     config.timeout_secs,
                 )))
             } else {

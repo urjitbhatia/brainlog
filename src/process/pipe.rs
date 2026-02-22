@@ -11,10 +11,7 @@ pub struct PipeResult {
     pub pid: u32,
 }
 
-pub async fn spawn_piped(
-    command: &[String],
-    tx: mpsc::Sender<Frame>,
-) -> Result<PipeResult> {
+pub async fn spawn_piped(command: &[String], tx: mpsc::Sender<Frame>) -> Result<PipeResult> {
     let (program, args) = command.split_first().expect("command must not be empty");
 
     let mut child = Command::new(program)

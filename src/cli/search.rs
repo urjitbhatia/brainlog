@@ -40,8 +40,7 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
             for m in &matches {
                 let service_name = service.name.as_deref().unwrap_or(&service.id[..8]);
                 let ts_secs = m.timestamp_ns / 1_000_000_000;
-                let dt = chrono::DateTime::from_timestamp(ts_secs as i64, 0)
-                    .unwrap_or_default();
+                let dt = chrono::DateTime::from_timestamp(ts_secs as i64, 0).unwrap_or_default();
                 println!(
                     "[{}] [{}] [{}] {}",
                     service_name,

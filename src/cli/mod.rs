@@ -7,7 +7,11 @@ pub mod search;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "brainlog", version, about = "Transparent process wrapper with log capture and MCP server")]
+#[command(
+    name = "brainlog",
+    version,
+    about = "Transparent process wrapper with log capture and MCP server"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -99,7 +103,16 @@ pub struct SearchArgs {
 
 /// Known subcommand names for direct mode detection
 pub const KNOWN_SUBCOMMANDS: &[&str] = &[
-    "run", "list", "logs", "search", "mcp", "help", "--help", "-h", "--version", "-V",
+    "run",
+    "list",
+    "logs",
+    "search",
+    "mcp",
+    "help",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
 ];
 
 /// Parse direct mode arguments from argv.
@@ -216,7 +229,11 @@ mod tests {
     fn known_subcommand_returns_none() {
         for cmd in KNOWN_SUBCOMMANDS {
             let result = parse_direct_mode(&args(&["brainlog", cmd]));
-            assert!(result.is_none(), "Should return None for subcommand: {}", cmd);
+            assert!(
+                result.is_none(),
+                "Should return None for subcommand: {}",
+                cmd
+            );
         }
     }
 
@@ -238,7 +255,13 @@ mod tests {
     #[test]
     fn multiple_tags() {
         let result = parse_direct_mode(&args(&[
-            "brainlog", "-t", "env:prod", "-t", "team:backend", "echo", "hi",
+            "brainlog",
+            "-t",
+            "env:prod",
+            "-t",
+            "team:backend",
+            "echo",
+            "hi",
         ]));
         let run_args = result.unwrap();
         assert_eq!(run_args.tag, vec!["env:prod", "team:backend"]);

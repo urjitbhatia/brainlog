@@ -118,12 +118,7 @@ impl Database {
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET status = ?1, exit_code = ?2, ended_at = ?3 WHERE id = ?4",
-            params![
-                status.as_str(),
-                exit_code,
-                Utc::now().to_rfc3339(),
-                run_id,
-            ],
+            params![status.as_str(), exit_code, Utc::now().to_rfc3339(), run_id,],
         )?;
         Ok(())
     }
@@ -222,9 +217,7 @@ impl Database {
              FROM services ORDER BY updated_at DESC",
         )?;
         let services = stmt
-            .query_map([], |row| {
-                row_to_service_rusqlite(row)
-            })?
+            .query_map([], |row| row_to_service_rusqlite(row))?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to list services")?;
         Ok(services)
@@ -386,8 +379,10 @@ mod tests {
     #[test]
     fn list_services_returns_all() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-a", Some("alpha"))).unwrap();
-        db.create_service(&make_service("svc-b", Some("beta"))).unwrap();
+        db.create_service(&make_service("svc-a", Some("alpha")))
+            .unwrap();
+        db.create_service(&make_service("svc-b", Some("beta")))
+            .unwrap();
 
         let list = db.list_services().unwrap();
         assert_eq!(list.len(), 2);
@@ -396,7 +391,8 @@ mod tests {
     #[test]
     fn create_and_get_run() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-r", Some("runner"))).unwrap();
+        db.create_service(&make_service("svc-r", Some("runner")))
+            .unwrap();
 
         let run = make_run("run-001", "svc-r", RunStatus::Running);
         db.create_run(&run).unwrap();
@@ -409,10 +405,13 @@ mod tests {
     #[test]
     fn update_run_status_and_exit_code() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-u", Some("updater"))).unwrap();
-        db.create_run(&make_run("run-u1", "svc-u", RunStatus::Running)).unwrap();
+        db.create_service(&make_service("svc-u", Some("updater")))
+            .unwrap();
+        db.create_run(&make_run("run-u1", "svc-u", RunStatus::Running))
+            .unwrap();
 
-        db.update_run_status("run-u1", &RunStatus::Completed, Some(0)).unwrap();
+        db.update_run_status("run-u1", &RunStatus::Completed, Some(0))
+            .unwrap();
         let updated = db.get_run("run-u1").unwrap().unwrap();
         assert_eq!(updated.status, RunStatus::Completed);
         assert_eq!(updated.exit_code, Some(0));
@@ -422,7 +421,8 @@ mod tests {
     #[test]
     fn latest_run_ordering() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-lr", Some("latest"))).unwrap();
+        db.create_service(&make_service("svc-lr", Some("latest")))
+            .unwrap();
 
         let mut run1 = make_run("run-lr1", "svc-lr", RunStatus::Completed);
         run1.started_at = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
@@ -443,7 +443,8 @@ mod tests {
     #[test]
     fn tags_crud() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-t", Some("tagged"))).unwrap();
+        db.create_service(&make_service("svc-t", Some("tagged")))
+            .unwrap();
 
         db.add_tag("svc-t", "env", "prod").unwrap();
         db.add_tag("svc-t", "team", "backend").unwrap();
@@ -457,8 +458,10 @@ mod tests {
     #[test]
     fn ports_crud() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-p", Some("ported"))).unwrap();
-        db.create_run(&make_run("run-p1", "svc-p", RunStatus::Running)).unwrap();
+        db.create_service(&make_service("svc-p", Some("ported")))
+            .unwrap();
+        db.create_run(&make_run("run-p1", "svc-p", RunStatus::Running))
+            .unwrap();
 
         db.add_port("run-p1", 8080, "tcp").unwrap();
         db.add_port("run-p1", 443, "tcp").unwrap();
@@ -474,23 +477,37 @@ mod tests {
     #[test]
     fn search_services_by_name() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-s1", Some("web-api"))).unwrap();
-        db.create_service(&make_service("svc-s2", Some("web-frontend"))).unwrap();
-        db.create_service(&make_service("svc-s3", Some("worker"))).unwrap();
+        db.create_service(&make_service("svc-s1", Some("web-api")))
+            .unwrap();
+        db.create_service(&make_service("svc-s2", Some("web-frontend")))
+            .unwrap();
+        db.create_service(&make_service("svc-s3", Some("worker")))
+            .unwrap();
 
-        let results = db.search_services(Some("web"), None, &[], None, None, 100).unwrap();
+        let results = db
+            .search_services(Some("web"), None, &[], None, None, 100)
+            .unwrap();
         assert_eq!(results.len(), 2);
     }
 
     #[test]
     fn search_services_by_tag() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-st1", Some("app1"))).unwrap();
-        db.create_service(&make_service("svc-st2", Some("app2"))).unwrap();
+        db.create_service(&make_service("svc-st1", Some("app1")))
+            .unwrap();
+        db.create_service(&make_service("svc-st2", Some("app2")))
+            .unwrap();
         db.add_tag("svc-st1", "env", "prod").unwrap();
 
         let results = db
-            .search_services(None, None, &[("env".to_string(), "prod".to_string())], None, None, 100)
+            .search_services(
+                None,
+                None,
+                &[("env".to_string(), "prod".to_string())],
+                None,
+                None,
+                100,
+            )
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "svc-st1");
@@ -499,14 +516,20 @@ mod tests {
     #[test]
     fn search_services_by_port() {
         let db = Database::open_in_memory().unwrap();
-        db.create_service(&make_service("svc-sp1", Some("http-svc"))).unwrap();
-        db.create_run(&make_run("run-sp1", "svc-sp1", RunStatus::Running)).unwrap();
+        db.create_service(&make_service("svc-sp1", Some("http-svc")))
+            .unwrap();
+        db.create_run(&make_run("run-sp1", "svc-sp1", RunStatus::Running))
+            .unwrap();
         db.add_port("run-sp1", 3000, "tcp").unwrap();
 
-        let results = db.search_services(None, None, &[], None, Some(3000), 100).unwrap();
+        let results = db
+            .search_services(None, None, &[], None, Some(3000), 100)
+            .unwrap();
         assert_eq!(results.len(), 1);
 
-        let empty = db.search_services(None, None, &[], None, Some(9999), 100).unwrap();
+        let empty = db
+            .search_services(None, None, &[], None, Some(9999), 100)
+            .unwrap();
         assert!(empty.is_empty());
     }
 

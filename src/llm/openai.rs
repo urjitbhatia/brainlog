@@ -86,7 +86,10 @@ impl LlmClient for OpenAiClient {
         }
 
         let response = req.send().await.context("LLM request failed")?;
-        let body: ChatResponse = response.json().await.context("Failed to parse LLM response")?;
+        let body: ChatResponse = response
+            .json()
+            .await
+            .context("Failed to parse LLM response")?;
 
         body.choices
             .into_iter()

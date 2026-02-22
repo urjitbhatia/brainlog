@@ -146,11 +146,7 @@ impl LogReader {
         Ok(frames.into_iter().skip(skip).collect())
     }
 
-    pub fn read_range(
-        &self,
-        start_time: Option<u64>,
-        end_time: Option<u64>,
-    ) -> Result<Vec<Frame>> {
+    pub fn read_range(&self, start_time: Option<u64>, end_time: Option<u64>) -> Result<Vec<Frame>> {
         let frames = self.read_frames()?;
         Ok(frames
             .into_iter()
@@ -312,10 +308,18 @@ mod tests {
         let (tx, rx) = mpsc::channel(64);
         let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
 
-        tx.send(make_frame(StreamType::Stdout, b"out1\n", 1000)).await.unwrap();
-        tx.send(make_frame(StreamType::Stderr, b"err1\n", 2000)).await.unwrap();
-        tx.send(make_frame(StreamType::Stdin, b"in1\n", 3000)).await.unwrap();
-        tx.send(make_frame(StreamType::Stdout, b"out2\n", 4000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"out1\n", 1000))
+            .await
+            .unwrap();
+        tx.send(make_frame(StreamType::Stderr, b"err1\n", 2000))
+            .await
+            .unwrap();
+        tx.send(make_frame(StreamType::Stdin, b"in1\n", 3000))
+            .await
+            .unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"out2\n", 4000))
+            .await
+            .unwrap();
         drop(tx);
 
         writer.run().await.unwrap();
@@ -347,9 +351,13 @@ mod tests {
         let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
 
         for i in 0..5 {
-            tx.send(make_frame(StreamType::Stdout, format!("line{}\n", i).as_bytes(), i * 1000))
-                .await
-                .unwrap();
+            tx.send(make_frame(
+                StreamType::Stdout,
+                format!("line{}\n", i).as_bytes(),
+                i * 1000,
+            ))
+            .await
+            .unwrap();
         }
         drop(tx);
         writer.run().await.unwrap();
@@ -376,9 +384,13 @@ mod tests {
         let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
 
         for i in 0..5u64 {
-            tx.send(make_frame(StreamType::Stdout, format!("f{}", i).as_bytes(), i * 1000))
-                .await
-                .unwrap();
+            tx.send(make_frame(
+                StreamType::Stdout,
+                format!("f{}", i).as_bytes(),
+                i * 1000,
+            ))
+            .await
+            .unwrap();
         }
         drop(tx);
         writer.run().await.unwrap();
@@ -396,9 +408,15 @@ mod tests {
         let (tx, rx) = mpsc::channel(64);
         let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
 
-        tx.send(make_frame(StreamType::Stdout, b"INFO: started\n", 1000)).await.unwrap();
-        tx.send(make_frame(StreamType::Stdout, b"ERROR: failed\n", 2000)).await.unwrap();
-        tx.send(make_frame(StreamType::Stdout, b"INFO: done\n", 3000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"INFO: started\n", 1000))
+            .await
+            .unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"ERROR: failed\n", 2000))
+            .await
+            .unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"INFO: done\n", 3000))
+            .await
+            .unwrap();
         drop(tx);
         writer.run().await.unwrap();
 
@@ -417,8 +435,12 @@ mod tests {
         let (tx, rx) = mpsc::channel(64);
         let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
 
-        tx.send(make_frame(StreamType::Stdout, b"hello", 1000)).await.unwrap();
-        tx.send(make_frame(StreamType::Stderr, b"world", 2000)).await.unwrap();
+        tx.send(make_frame(StreamType::Stdout, b"hello", 1000))
+            .await
+            .unwrap();
+        tx.send(make_frame(StreamType::Stderr, b"world", 2000))
+            .await
+            .unwrap();
         drop(tx);
         writer.run().await.unwrap();
 

@@ -3,8 +3,9 @@
 //! Each test creates an isolated HOME directory so brainlog's SQLite DB
 //! and log files don't interfere with each other or the real user data.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 /// Test harness: isolated brainlog environment.
@@ -110,11 +111,9 @@ fn run_creates_db_and_records() {
 
     // Run should be completed with exit code 0
     let (status, exit_code): (String, i32) = conn
-        .query_row(
-            "SELECT status, exit_code FROM runs LIMIT 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT status, exit_code FROM runs LIMIT 1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .unwrap();
     assert_eq!(status, "completed");
     assert_eq!(exit_code, 0);
@@ -131,9 +130,18 @@ fn run_creates_log_files() {
         .unwrap();
 
     let log_path = Path::new(&log_dir);
-    assert!(log_path.join("stdout.log").exists(), "stdout.log should exist");
-    assert!(log_path.join("stderr.log").exists(), "stderr.log should exist");
-    assert!(log_path.join("stdin.log").exists(), "stdin.log should exist");
+    assert!(
+        log_path.join("stdout.log").exists(),
+        "stdout.log should exist"
+    );
+    assert!(
+        log_path.join("stderr.log").exists(),
+        "stderr.log should exist"
+    );
+    assert!(
+        log_path.join("stdin.log").exists(),
+        "stdin.log should exist"
+    );
     assert!(
         log_path.join("combined.log").exists(),
         "combined.log should exist"
@@ -216,8 +224,14 @@ fn list_verbose_shows_details() {
     let list = env.run(&["list", "-v"]);
     assert_eq!(list.exit_code, 0);
     assert!(list.stdout.contains("verbose-svc"), "should show name");
-    assert!(list.stdout.contains("Executable:"), "should show executable");
-    assert!(list.stdout.contains("Latest Run:"), "should show latest run");
+    assert!(
+        list.stdout.contains("Executable:"),
+        "should show executable"
+    );
+    assert!(
+        list.stdout.contains("Latest Run:"),
+        "should show latest run"
+    );
     assert!(list.stdout.contains("Log Sizes:"), "should show log sizes");
     assert!(list.stdout.contains("Exit Code:"), "should show exit code");
 }
@@ -434,24 +448,8 @@ fn stderr_is_captured() {
 #[test]
 fn search_filters_by_service() {
     let env = BrainlogEnv::new();
-    env.run(&[
-        "run",
-        "--name",
-        "svc-a",
-        "--",
-        "sh",
-        "-c",
-        "echo MARKER_A",
-    ]);
-    env.run(&[
-        "run",
-        "--name",
-        "svc-b",
-        "--",
-        "sh",
-        "-c",
-        "echo MARKER_B",
-    ]);
+    env.run(&["run", "--name", "svc-a", "--", "sh", "-c", "echo MARKER_A"]);
+    env.run(&["run", "--name", "svc-b", "--", "sh", "-c", "echo MARKER_B"]);
 
     let search_a = env.run(&["search", "--service", "svc-a", "MARKER"]);
     assert!(
@@ -512,4 +510,216 @@ fn list_filters_by_name() {
         "should not show worker: {}",
         list.stdout
     );
+}
+
+// ─── MCP server integration ─────────────────────────────────────────
+
+impl BrainlogEnv {
+    /// Spawn `brainlog mcp` with stdin/stdout piped for JSON-RPC.
+    fn spawn_mcp(&self) -> std::process::Child {
+        Command::new(&self.bin)
+            .arg("mcp")
+            .env("HOME", self.home.path())
+            .env("RUST_LOG", "warn")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn brainlog mcp")
+    }
+}
+
+/// Send a JSON-RPC message to the MCP server and read the response.
+fn mcp_request(stdin: &mut impl Write, stdout: &mut impl BufRead, request: &str) -> String {
+    // MCP uses newline-delimited JSON
+    writeln!(stdin, "{}", request).expect("write to mcp stdin");
+    stdin.flush().expect("flush mcp stdin");
+
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("read from mcp stdout");
+    line
+}
+
+#[test]
+fn mcp_initialize_and_list_tools() {
+    let env = BrainlogEnv::new();
+    let mut child = env.spawn_mcp();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // Initialize
+    let init_req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#;
+    let init_resp = mcp_request(&mut stdin, &mut stdout, init_req);
+    assert!(
+        init_resp.contains("\"result\""),
+        "initialize should return result: {}",
+        init_resp
+    );
+    assert!(
+        init_resp.contains("serverInfo") || init_resp.contains("capabilities"),
+        "initialize should have server info: {}",
+        init_resp
+    );
+
+    // Send initialized notification
+    let notif = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    writeln!(stdin, "{}", notif).unwrap();
+    stdin.flush().unwrap();
+
+    // List tools
+    let tools_req = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+    let tools_resp = mcp_request(&mut stdin, &mut stdout, tools_req);
+    assert!(
+        tools_resp.contains("discover_services"),
+        "should expose discover_services tool: {}",
+        tools_resp
+    );
+    assert!(
+        tools_resp.contains("get_logs"),
+        "should expose get_logs tool: {}",
+        tools_resp
+    );
+    assert!(
+        tools_resp.contains("search_logs"),
+        "should expose search_logs tool: {}",
+        tools_resp
+    );
+
+    // Clean shutdown
+    drop(stdin);
+    let _ = child.wait();
+}
+
+#[test]
+fn mcp_discover_services_tool() {
+    let env = BrainlogEnv::new();
+
+    // First, create some data via the CLI
+    env.run(&[
+        "run",
+        "--name",
+        "mcp-test-svc",
+        "--tag",
+        "env:test",
+        "--",
+        "echo",
+        "mcp-data",
+    ]);
+
+    let mut child = env.spawn_mcp();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // Initialize
+    let init_req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#;
+    mcp_request(&mut stdin, &mut stdout, init_req);
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    // Call discover_services
+    let call_req = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discover_services","arguments":{}}}"#;
+    let call_resp = mcp_request(&mut stdin, &mut stdout, call_req);
+    assert!(
+        call_resp.contains("mcp-test-svc"),
+        "discover_services should find the service: {}",
+        call_resp
+    );
+    assert!(
+        call_resp.contains("env"),
+        "response should include tags: {}",
+        call_resp
+    );
+
+    drop(stdin);
+    let _ = child.wait();
+}
+
+#[test]
+fn mcp_get_logs_tool() {
+    let env = BrainlogEnv::new();
+    env.run(&[
+        "run",
+        "--name",
+        "mcp-log-svc",
+        "--",
+        "sh",
+        "-c",
+        "echo mcp-log-output",
+    ]);
+
+    let mut child = env.spawn_mcp();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // Initialize
+    let init_req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#;
+    mcp_request(&mut stdin, &mut stdout, init_req);
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    // Call get_logs by service name
+    let call_req = r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_logs","arguments":{"id":"mcp-log-svc"}}}"#;
+    let call_resp = mcp_request(&mut stdin, &mut stdout, call_req);
+    assert!(
+        call_resp.contains("mcp-log-output"),
+        "get_logs should return captured output: {}",
+        call_resp
+    );
+
+    drop(stdin);
+    let _ = child.wait();
+}
+
+#[test]
+fn mcp_search_logs_tool() {
+    let env = BrainlogEnv::new();
+    env.run(&[
+        "run",
+        "--name",
+        "mcp-search-svc",
+        "--",
+        "sh",
+        "-c",
+        "echo FIND_ME_MCP; echo IGNORE_THIS",
+    ]);
+
+    let mut child = env.spawn_mcp();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // Initialize
+    let init_req = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}"#;
+    mcp_request(&mut stdin, &mut stdout, init_req);
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .unwrap();
+    stdin.flush().unwrap();
+
+    // Call search_logs
+    let call_req = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search_logs","arguments":{"pattern":"FIND_ME"}}}"#;
+    let call_resp = mcp_request(&mut stdin, &mut stdout, call_req);
+    assert!(
+        call_resp.contains("FIND_ME_MCP"),
+        "search_logs should find the pattern: {}",
+        call_resp
+    );
+    assert!(
+        !call_resp.contains("IGNORE_THIS"),
+        "search_logs should not match non-matching lines: {}",
+        call_resp
+    );
+
+    drop(stdin);
+    let _ = child.wait();
 }

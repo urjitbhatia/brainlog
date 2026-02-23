@@ -625,8 +625,8 @@ fn mcp_discover_services_tool() {
     .unwrap();
     stdin.flush().unwrap();
 
-    // Call discover_services
-    let call_req = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discover_services","arguments":{}}}"#;
+    // Call discover_services with group=false to get flat (per-service) output
+    let call_req = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"discover_services","arguments":{"group":false}}}"#;
     let call_resp = mcp_request(&mut stdin, &mut stdout, call_req);
     assert!(
         call_resp.contains("mcp-test-svc"),

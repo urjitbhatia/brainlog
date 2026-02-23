@@ -13,7 +13,6 @@ pub struct Config {
     pub enrichment: EnrichmentConfig,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {

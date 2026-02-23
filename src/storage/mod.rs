@@ -4,6 +4,6 @@ pub mod models;
 pub mod permissions;
 pub mod schema;
 
-pub use db::Database;
+pub use db::{Database, ServiceMetadataMatch};
 pub use logfile::{LogReader, LogWriter};
 pub use models::*;

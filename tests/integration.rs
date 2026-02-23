@@ -321,7 +321,7 @@ fn search_finds_pattern() {
         search.stdout
     );
     assert!(
-        search.stdout.contains("1 match"),
+        search.stdout.contains("1 log match"),
         "should report 1 match: {}",
         search.stdout
     );

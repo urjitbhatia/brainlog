@@ -1,7 +1,6 @@
 use anyhow::Result;
 use regex::Regex;
 use std::path::Path;
-use std::sync::LazyLock;
 
 use crate::storage::logfile::{frames_to_text, LogReader};
 use crate::storage::models::{LogMode, StreamFilter};
@@ -9,13 +8,10 @@ use crate::storage::Database;
 
 use super::types::*;
 
-/// Regex that matches common ANSI escape sequences (CSI sequences and OSC sequences).
-static ANSI_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap());
-
-/// Strip ANSI escape codes from the given string.
+/// Strip ANSI/terminal escape sequences using a proper VT parser.
 fn strip_ansi_codes(s: &str) -> String {
-    ANSI_RE.replace_all(s, "").into_owned()
+    let stripped = strip_ansi_escapes::strip(s);
+    String::from_utf8_lossy(&stripped).into_owned()
 }
 
 pub fn discover_services(
@@ -889,6 +885,12 @@ mod tests {
     fn strip_ansi_codes_handles_multiple_sequences() {
         let input = "\x1b[1m\x1b[31mERROR\x1b[0m: \x1b[33mconnection\x1b[0m refused";
         assert_eq!(strip_ansi_codes(input), "ERROR: connection refused");
+    }
+
+    #[test]
+    fn strip_ansi_codes_handles_dec_private_mode() {
+        let input = "\x1b[?2026hsome text\x1b[?2026l\x1b[Omore\x1b[I";
+        assert_eq!(strip_ansi_codes(input), "some textmore");
     }
 
     /// Create a test env with ANSI escape codes in log output.

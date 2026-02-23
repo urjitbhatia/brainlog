@@ -71,6 +71,11 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
                 if let Some(exit_code) = run.exit_code {
                     println!("Exit Code:   {}", exit_code);
                 }
+                let ports = db.get_ports(&run.id)?;
+                if !ports.is_empty() {
+                    let port_strs: Vec<String> = ports.iter().map(|p| p.port.to_string()).collect();
+                    println!("Ports:       {}", port_strs.join(", "));
+                }
                 let (stdout_sz, stderr_sz, stdin_sz, combined_sz) =
                     log_sizes(Path::new(&run.log_dir));
                 println!(

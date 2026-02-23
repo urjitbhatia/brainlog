@@ -159,9 +159,13 @@ fn create_service(
 ) -> Result<String> {
     let service_id = Uuid::new_v4().to_string();
     let now = Utc::now();
+    let name = args
+        .name
+        .clone()
+        .or_else(|| Some(derive_name(&args.command)));
     let service = Service {
         id: service_id.clone(),
-        name: args.name.clone(),
+        name,
         description: args.desc.clone(),
         executable: executable.to_string(),
         command_line: args.command.clone(),
@@ -176,4 +180,41 @@ fn create_service(
     };
     db.create_service(&service)?;
     Ok(service_id)
+}
+
+/// Derive a short human-readable name from the command line.
+///
+/// Examples:
+///   ["make", "dev"]              -> "make-dev"
+///   ["pnpm", "run", "dev:build"] -> "pnpm-dev:build"
+///   ["python3", "-m", "http.server", "9876"] -> "python3-http.server"
+///   ["node", "server.js"]        -> "node-server.js"
+fn derive_name(command: &[String]) -> String {
+    if command.is_empty() {
+        return "unknown".to_string();
+    }
+
+    // Start with the base executable name (strip path)
+    let exe = std::path::Path::new(&command[0])
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(&command[0]);
+
+    // Collect meaningful args (skip flags/options, stop at 2 meaningful args)
+    let meaningful: Vec<&str> = command[1..]
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .filter(|a| {
+            // Skip common subcommand noise like "run", "exec", "start"
+            !matches!(a.as_str(), "run" | "exec" | "start" | "--")
+        })
+        .map(|s| s.as_str())
+        .take(2)
+        .collect();
+
+    if meaningful.is_empty() {
+        exe.to_string()
+    } else {
+        format!("{}-{}", exe, meaningful.join("-"))
+    }
 }

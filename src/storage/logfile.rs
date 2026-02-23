@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
@@ -195,6 +195,30 @@ impl LogReader {
             }
         }
         Ok(matches)
+    }
+
+    /// Read frames starting from a byte offset. Returns the frames read and the
+    /// new byte offset (i.e. the position after the last successfully read frame).
+    /// This enables incremental reads for follow/tail -f style use cases.
+    pub fn read_frames_from_offset(&self, offset: u64) -> Result<(Vec<Frame>, u64)> {
+        if !self.path.exists() {
+            return Ok((Vec::new(), offset));
+        }
+        let mut file = std::fs::File::open(&self.path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut frames = Vec::new();
+        loop {
+            match read_one_frame(&mut file) {
+                Ok(Some(frame)) => frames.push(frame),
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("Error reading frame at offset: {}", e);
+                    break;
+                }
+            }
+        }
+        let new_offset = file.stream_position()?;
+        Ok((frames, new_offset))
     }
 
     pub fn file_size(&self) -> Result<u64> {
@@ -490,5 +514,107 @@ mod tests {
         let (bytes, has_more) = frames_to_bytes(&frames, 6);
         assert_eq!(bytes, b"aaaa");
         assert!(has_more);
+    }
+
+    #[tokio::test]
+    async fn read_frames_from_offset_reads_only_new_frames() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        // Write 3 initial frames
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        for i in 0..3u64 {
+            tx.send(make_frame(
+                StreamType::Stdout,
+                format!("line{}\n", i).as_bytes(),
+                i * 1000,
+            ))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+
+        // Read all frames to get the end offset
+        let (all_frames, offset) = reader.read_frames_from_offset(0).unwrap();
+        assert_eq!(all_frames.len(), 3);
+        assert!(offset > 0);
+
+        // Reading from end offset should return no new frames
+        let (new_frames, same_offset) = reader.read_frames_from_offset(offset).unwrap();
+        assert_eq!(new_frames.len(), 0);
+        assert_eq!(same_offset, offset);
+
+        // Append more frames by writing directly to the file
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(dir.path().join("stdout.log"))
+                .unwrap();
+            let frame = make_frame(StreamType::Stdout, b"line3\n", 3000);
+            file.write_all(&encode_frame(&frame)).unwrap();
+            let frame = make_frame(StreamType::Stdout, b"line4\n", 4000);
+            file.write_all(&encode_frame(&frame)).unwrap();
+        }
+
+        // Read from previous offset should only return the 2 new frames
+        let (new_frames, new_offset) = reader.read_frames_from_offset(offset).unwrap();
+        assert_eq!(new_frames.len(), 2);
+        assert_eq!(new_frames[0].payload, b"line3\n");
+        assert_eq!(new_frames[1].payload, b"line4\n");
+        assert!(new_offset > offset);
+    }
+
+    #[test]
+    fn read_frames_from_offset_missing_file() {
+        let reader = LogReader::new(Path::new("/nonexistent"), StreamFilter::Stdout);
+        let (frames, offset) = reader.read_frames_from_offset(0).unwrap();
+        assert_eq!(frames.len(), 0);
+        assert_eq!(offset, 0);
+    }
+
+    #[tokio::test]
+    async fn read_frames_from_offset_mid_file() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        // Write 5 frames
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        for i in 0..5u64 {
+            tx.send(make_frame(
+                StreamType::Stdout,
+                format!("msg{}\n", i).as_bytes(),
+                i * 1000,
+            ))
+            .await
+            .unwrap();
+        }
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+
+        // Read first 2 frames, then continue from offset
+        let (batch1, offset1) = reader.read_frames_from_offset(0).unwrap();
+        assert_eq!(batch1.len(), 5);
+
+        // Compute offset of frame 2 by reading incrementally
+        // Each frame has FRAME_HEADER_SIZE (13) + payload length
+        // "msg0\n" = 5 bytes, so frame size = 13 + 5 = 18 bytes
+        let frame_size = FRAME_HEADER_SIZE + 5; // "msgN\n" is 5 bytes
+        let mid_offset = (frame_size * 2) as u64;
+
+        let (batch2, offset2) = reader.read_frames_from_offset(mid_offset).unwrap();
+        assert_eq!(batch2.len(), 3);
+        assert_eq!(batch2[0].payload, b"msg2\n");
+        assert_eq!(batch2[1].payload, b"msg3\n");
+        assert_eq!(batch2[2].payload, b"msg4\n");
+        assert_eq!(offset2, offset1);
     }
 }

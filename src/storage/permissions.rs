@@ -5,16 +5,22 @@ use std::path::Path;
 
 /// Create a directory (and parents) with owner-only permissions (0700).
 /// If the directory already exists, its permissions are updated.
+/// Permission setting is best-effort — a warning is logged on failure
+/// (e.g., on filesystems that don't support Unix permissions).
 pub fn create_dir_restricted(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
-    fs::set_permissions(path, Permissions::from_mode(0o700))?;
+    if let Err(e) = fs::set_permissions(path, Permissions::from_mode(0o700)) {
+        tracing::warn!("could not set permissions on {}: {e}", path.display());
+    }
     Ok(())
 }
 
 /// Set owner-only read/write permissions (0600) on an existing file.
-pub fn set_file_restricted(path: &Path) -> Result<()> {
-    fs::set_permissions(path, Permissions::from_mode(0o600))?;
-    Ok(())
+/// Best-effort — logs a warning on failure.
+pub fn set_file_restricted(path: &Path) {
+    if let Err(e) = fs::set_permissions(path, Permissions::from_mode(0o600)) {
+        tracing::warn!("could not set permissions on {}: {e}", path.display());
+    }
 }
 
 #[cfg(test)]
@@ -60,7 +66,7 @@ mod tests {
         let file = tmp.path().join("secret.txt");
         fs::write(&file, "sensitive data").unwrap();
 
-        set_file_restricted(&file).unwrap();
+        set_file_restricted(&file);
 
         let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "expected 0600, got {:o}", mode);

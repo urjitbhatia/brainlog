@@ -16,8 +16,7 @@ impl Database {
             super::permissions::create_dir_restricted(parent)?;
         }
         let conn = Connection::open(path)?;
-        // Restrict database file permissions to owner-only (0600)
-        super::permissions::set_file_restricted(path)?;
+        super::permissions::set_file_restricted(path);
         schema::initialize(&conn)?;
         Ok(Self { conn })
     }

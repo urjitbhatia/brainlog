@@ -46,10 +46,10 @@ impl LogWriter {
         let mut stdin_file = std::fs::File::create(&stdin_path)?;
         let mut combined_file = std::fs::File::create(&combined_path)?;
 
-        super::permissions::set_file_restricted(&stdout_path)?;
-        super::permissions::set_file_restricted(&stderr_path)?;
-        super::permissions::set_file_restricted(&stdin_path)?;
-        super::permissions::set_file_restricted(&combined_path)?;
+        super::permissions::set_file_restricted(&stdout_path);
+        super::permissions::set_file_restricted(&stderr_path);
+        super::permissions::set_file_restricted(&stdin_path);
+        super::permissions::set_file_restricted(&combined_path);
 
         let mut buffer_size: usize = 0;
         let flush_interval = tokio::time::Duration::from_millis(self.flush_interval_ms);

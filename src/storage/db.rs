@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use regex::Regex;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
@@ -317,9 +318,84 @@ impl Database {
         Ok(services)
     }
 
+    /// Search services whose metadata (name, command line, tag values) matches
+    /// the given regex pattern. Returns matching services along with the field
+    /// that matched (for display purposes).
+    pub fn search_services_by_pattern(&self, pattern: &Regex) -> Result<Vec<ServiceMetadataMatch>> {
+        let services = self.list_services()?;
+        let mut matches = Vec::new();
+
+        for service in services {
+            let mut matched_fields = Vec::new();
+
+            // Check service name
+            if let Some(ref name) = service.name {
+                if pattern.is_match(name) {
+                    matched_fields.push(format!("name: {}", name));
+                }
+            }
+
+            // Check command line (joined as a single string)
+            let cmd_line = service.command_line.join(" ");
+            if pattern.is_match(&cmd_line) {
+                matched_fields.push(format!("command: {}", cmd_line));
+            }
+
+            // Check individual command line arguments
+            if matched_fields.iter().all(|f| !f.starts_with("command:")) {
+                for arg in &service.command_line {
+                    if pattern.is_match(arg) {
+                        matched_fields.push(format!("command: {}", cmd_line));
+                        break;
+                    }
+                }
+            }
+
+            // Check tag values
+            let tags = self.get_tags(&service.id)?;
+            for tag in &tags {
+                if pattern.is_match(&tag.value) || pattern.is_match(&tag.key) {
+                    matched_fields.push(format!("tag: {}:{}", tag.key, tag.value));
+                }
+            }
+
+            // Check description
+            if let Some(ref desc) = service.description {
+                if pattern.is_match(desc) {
+                    matched_fields.push(format!("description: {}", desc));
+                }
+            }
+
+            if !matched_fields.is_empty() {
+                // Get latest run status for display
+                let latest_run = self.get_latest_run(&service.id)?;
+                let status = latest_run
+                    .as_ref()
+                    .map(|r| r.status.as_str().to_string())
+                    .unwrap_or_else(|| "no runs".to_string());
+
+                matches.push(ServiceMetadataMatch {
+                    service,
+                    matched_fields,
+                    status,
+                });
+            }
+        }
+
+        Ok(matches)
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// A service that matched a metadata search, along with what fields matched.
+#[derive(Debug)]
+pub struct ServiceMetadataMatch {
+    pub service: Service,
+    pub matched_fields: Vec<String>,
+    pub status: String,
 }
 
 #[cfg(test)]
@@ -655,6 +731,231 @@ mod tests {
             svc.description.as_deref(),
             Some("Enhanced description from LLM")
         );
+    }
+
+    // --- Metadata search tests ---
+
+    fn make_service_with_cmd(id: &str, name: Option<&str>, command: &[&str]) -> Service {
+        Service {
+            id: id.to_string(),
+            name: name.map(|s| s.to_string()),
+            description: Some("test service".to_string()),
+            executable: command.first().unwrap_or(&"/usr/bin/test").to_string(),
+            command_line: command.iter().map(|s| s.to_string()).collect(),
+            working_dir: "/tmp".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            enrichment_status: EnrichmentStatus::Pending,
+        }
+    }
+
+    #[test]
+    fn metadata_search_by_command_name() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-ms1",
+            Some("my-false"),
+            &["false"],
+        ))
+        .unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-ms2",
+            Some("my-echo"),
+            &["echo", "hello"],
+        ))
+        .unwrap();
+
+        let pattern = Regex::new("false").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].service.id, "svc-ms1");
+        assert!(results[0]
+            .matched_fields
+            .iter()
+            .any(|f| f.starts_with("command:")));
+    }
+
+    #[test]
+    fn metadata_search_by_service_name() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-mn1",
+            Some("web-api"),
+            &["node", "server.js"],
+        ))
+        .unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-mn2",
+            Some("worker"),
+            &["python", "worker.py"],
+        ))
+        .unwrap();
+
+        let pattern = Regex::new("web-api").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].service.id, "svc-mn1");
+        assert!(results[0]
+            .matched_fields
+            .iter()
+            .any(|f| f.starts_with("name:")));
+    }
+
+    #[test]
+    fn metadata_search_by_tag() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-mt1",
+            Some("tagged-svc"),
+            &["echo", "hi"],
+        ))
+        .unwrap();
+        db.add_tag("svc-mt1", "env", "production").unwrap();
+
+        db.create_service(&make_service_with_cmd(
+            "svc-mt2",
+            Some("untagged"),
+            &["echo", "bye"],
+        ))
+        .unwrap();
+
+        let pattern = Regex::new("production").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].service.id, "svc-mt1");
+        assert!(results[0]
+            .matched_fields
+            .iter()
+            .any(|f| f.starts_with("tag:")));
+    }
+
+    #[test]
+    fn metadata_search_matches_multiple_fields() {
+        let db = Database::open_in_memory().unwrap();
+        // Service where "test" appears in both name and command
+        db.create_service(&make_service_with_cmd(
+            "svc-mm1",
+            Some("test-runner"),
+            &["test", "--verbose"],
+        ))
+        .unwrap();
+
+        let pattern = Regex::new("test").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        // Should match both name and command fields
+        let has_name_match = results[0]
+            .matched_fields
+            .iter()
+            .any(|f| f.starts_with("name:"));
+        let has_cmd_match = results[0]
+            .matched_fields
+            .iter()
+            .any(|f| f.starts_with("command:"));
+        assert!(has_name_match, "Should match service name");
+        assert!(has_cmd_match, "Should match command line");
+    }
+
+    #[test]
+    fn metadata_search_no_matches() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-nm1",
+            Some("my-app"),
+            &["node", "app.js"],
+        ))
+        .unwrap();
+
+        let pattern = Regex::new("zzz_nonexistent").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn metadata_search_regex_pattern() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-rx1",
+            Some("web-server-1"),
+            &["nginx"],
+        ))
+        .unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-rx2",
+            Some("web-server-2"),
+            &["apache"],
+        ))
+        .unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-rx3",
+            Some("worker"),
+            &["sidekiq"],
+        ))
+        .unwrap();
+
+        // Regex matching "web-server-\d+"
+        let pattern = Regex::new(r"web-server-\d+").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn metadata_search_includes_run_status() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-rs1",
+            Some("status-svc"),
+            &["echo", "hello"],
+        ))
+        .unwrap();
+        db.create_run(&make_run("run-rs1", "svc-rs1", RunStatus::Failed))
+            .unwrap();
+
+        let pattern = Regex::new("status-svc").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, "failed");
+    }
+
+    #[test]
+    fn metadata_search_no_runs_shows_no_runs_status() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with_cmd(
+            "svc-nr1",
+            Some("no-run-svc"),
+            &["echo"],
+        ))
+        .unwrap();
+
+        let pattern = Regex::new("no-run-svc").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, "no runs");
+    }
+
+    #[test]
+    fn metadata_search_by_description() {
+        let db = Database::open_in_memory().unwrap();
+        let mut svc = make_service_with_cmd("svc-md1", Some("my-svc"), &["echo"]);
+        svc.description = Some("A production database service".to_string());
+        db.create_service(&svc).unwrap();
+
+        let pattern = Regex::new("database").unwrap();
+        let results = db.search_services_by_pattern(&pattern).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0]
+            .matched_fields
+            .iter()
+            .any(|f| f.starts_with("description:")));
     }
 }
 

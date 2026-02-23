@@ -101,6 +101,10 @@ pub struct SearchArgs {
     /// Maximum number of matches
     #[arg(short, long, default_value = "50")]
     pub max_matches: usize,
+
+    /// Only search log content (skip service metadata matching)
+    #[arg(long)]
+    pub logs_only: bool,
 }
 
 /// Known subcommand names for direct mode detection

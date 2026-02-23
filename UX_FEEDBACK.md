@@ -22,3 +22,22 @@ Context: Used BrainLog MCP to observe API server logs during an end-to-end test 
 11. **`since` cursor for incremental log polling** — During the E2E test, I polled `get_logs(tail=20)` repeatedly and eyeballed what was new. A `since` parameter (timestamp or opaque cursor) that returns only lines newer than the last read would make incremental polling clean.
 
 12. **`wait_for_pattern` blocking call** — A tool that blocks until a regex appears in the logs (with timeout), like Playwright's `wait_for_text`. Example: `wait_for_pattern(id, pattern="Added regulation|error", timeout=30)`. This turns "poll and hope" into precise observation — ideal for agents verifying async behavior end-to-end.
+
+---
+
+## Multi-Agent Observability (2026-02-23)
+
+Context: Tested wrapping Claude Code with brainlog (`brainlog run --name "claude_observer_test" -- claude`) so one agent can observe another.
+
+**What works:**
+- `--name` flag is the clean way to identify agent sessions. The observing agent uses `discover_services(name="claude_observer_test")` and it works instantly.
+- Grouping collapses 16 services to 4 groups — massively reduces noise for the observer.
+- `tail_lines` on discover gives a quick preview without a follow-up `get_logs` call.
+- Port detection found Claude Code's internal ports (55798, 55803).
+
+**What doesn't work well:**
+- Claude Code's output is TUI-based (cursor movements, screen redraws, DEC private mode sequences). The `strip_ansi` regex only handles CSI color codes and OSC sequences, not `\x1b[?2026h`, `\x1b[I`, `\x1b[O` etc. Need to expand the regex to cover DEC private mode and other terminal control sequences.
+- No parseable session identity in Claude Code's stdout. The status line has project path + model but it's buried in TUI noise. Parsing it is fragile — `--name` is the right approach.
+- `BRAINLOG_SERVICE_NAME` env var would be a nice alternative to `--name` for scripted/automated launches.
+
+**Conclusion:** Agent-observes-agent via brainlog works. The `--name` + `discover_services` + `get_logs(strip_ansi=true)` pipeline is the path. Main gap is better terminal escape sequence stripping for TUI apps.

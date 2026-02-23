@@ -30,7 +30,7 @@ pub fn create_client(config: &LlmConfig) -> Option<Box<dyn LlmClient>> {
                 .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
             Some(Box::new(openai::OpenAiClient::new(
                 base_url,
-                config.api_key.clone(),
+                config.resolve_api_key(),
                 config
                     .model
                     .clone()
@@ -46,7 +46,7 @@ pub fn create_client(config: &LlmConfig) -> Option<Box<dyn LlmClient>> {
             });
             Some(Box::new(openai::OpenAiClient::new(
                 base_url,
-                config.api_key.clone(),
+                config.resolve_api_key(),
                 config
                     .model
                     .clone()
@@ -59,7 +59,7 @@ pub fn create_client(config: &LlmConfig) -> Option<Box<dyn LlmClient>> {
             if let Some(ref base_url) = config.base_url {
                 Some(Box::new(openai::OpenAiClient::new(
                     base_url.clone(),
-                    config.api_key.clone(),
+                    config.resolve_api_key(),
                     config
                         .model
                         .clone()

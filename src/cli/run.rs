@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -62,65 +62,73 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     );
     let log_handle = tokio::spawn(async move { log_writer.run().await });
 
-    // Spawn the wrapped process
-    let spawn_result = process::spawn_wrapped(&args.command, tx).await?;
+    // PID channel — child sends PID immediately after spawn, before exiting
+    let (pid_tx, pid_rx) = oneshot::channel::<u32>();
 
-    // Update run with pid
-    if spawn_result.pid > 0 {
-        db.update_run_pid(&run_id, spawn_result.pid)?;
-    }
-
-    // Start background tasks
+    // Prepare port detection cancellation token
+    let port_cancel = CancellationToken::new();
     let db_path = config.db_path();
 
-    // Port detection — create token so we can cancel the polling loop.
-    // NOTE: currently spawn_wrapped blocks until the child exits, so the
-    // child is already dead by this point. The cancellation token still
-    // ensures the spawned task terminates promptly rather than looping
-    // forever on a stale PID.
-    let port_cancel = CancellationToken::new();
-    let port_handle = if config.port_detection.enabled && spawn_result.pid > 0 {
-        let run_id_port = run_id.clone();
-        let pid_for_port = spawn_result.pid;
-        let poll_interval = config.port_detection.poll_interval_secs;
-        let db_path_port = db_path.clone();
-        let cancel = port_cancel.clone();
-        Some(tokio::spawn(async move {
-            platform::poll_ports(
-                pid_for_port,
-                &run_id_port,
-                &db_path_port,
-                poll_interval,
-                cancel,
-            )
-            .await;
-        }))
-    } else {
-        None
-    };
+    // Spawn a task that waits for the PID and starts background work immediately
+    let run_id_bg = run_id.clone();
+    let service_id_bg = service_id.clone();
+    let config_bg = config.clone();
+    let working_dir_bg = working_dir.clone();
+    let command_bg = args.command.clone();
+    let tags_bg = args.tag.clone();
+    let desc_bg = args.desc.clone();
+    let has_user_name = args.name.is_some();
+    let port_cancel_bg = port_cancel.clone();
+    let db_path_bg = db_path.clone();
 
-    // LLM enrichment (fire-and-forget)
-    if config.enrichment.enabled {
-        let service_id_enrich = service_id.clone();
-        let config_enrich = config.clone();
-        let working_dir_enrich = working_dir.clone();
-        let command_enrich = args.command.clone();
-        let tags_enrich = args.tag.clone();
-        let desc_enrich = args.desc.clone();
-        let has_user_name = args.name.is_some();
-        tokio::spawn(async move {
-            llm::enrichment::enrich_service(
-                &config_enrich,
-                &service_id_enrich,
-                &command_enrich,
-                &working_dir_enrich,
-                &tags_enrich,
-                desc_enrich.as_deref(),
-                has_user_name,
-            )
-            .await;
-        });
-    }
+    let bg_handle = tokio::spawn(async move {
+        let pid = match pid_rx.await {
+            Ok(pid) => pid,
+            Err(_) => return,
+        };
+
+        // Record PID in database while child is still running
+        if pid > 0 {
+            if let Ok(db) = Database::open(&db_path_bg) {
+                if let Err(e) = db.update_run_pid(&run_id_bg, pid) {
+                    tracing::warn!("Failed to record child PID: {e}");
+                }
+            }
+        }
+
+        // Start port detection while child is still running
+        if config_bg.port_detection.enabled && pid > 0 {
+            let run_id_port = run_id_bg.clone();
+            let db_path_port = db_path_bg.clone();
+            let poll_interval = config_bg.port_detection.poll_interval_secs;
+            let cancel = port_cancel_bg;
+            tokio::spawn(async move {
+                platform::poll_ports(pid, &run_id_port, &db_path_port, poll_interval, cancel).await;
+            });
+        }
+
+        // LLM enrichment (fire-and-forget)
+        if config_bg.enrichment.enabled {
+            tokio::spawn(async move {
+                llm::enrichment::enrich_service(
+                    &config_bg,
+                    &service_id_bg,
+                    &command_bg,
+                    &working_dir_bg,
+                    &tags_bg,
+                    desc_bg.as_deref(),
+                    has_user_name,
+                )
+                .await;
+            });
+        }
+    });
+
+    // Spawn the wrapped process — PID is sent via pid_tx immediately after fork/spawn
+    let spawn_result = process::spawn_wrapped(&args.command, tx, pid_tx).await?;
+
+    // Wait for background setup task to complete
+    let _ = bg_handle.await;
 
     // Wait for log writer to finish
     if let Err(e) = log_handle.await {
@@ -129,9 +137,6 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
     // Stop port polling now that the child has exited
     port_cancel.cancel();
-    if let Some(handle) = port_handle {
-        let _ = handle.await;
-    }
 
     // Update run status
     let exit_code = spawn_result.exit_code.unwrap_or(1);

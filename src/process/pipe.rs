@@ -1,6 +1,6 @@
 use anyhow::Result;
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::storage::models::{Frame, StreamType};
 
@@ -11,7 +11,11 @@ pub struct PipeResult {
     pub pid: u32,
 }
 
-pub async fn spawn_piped(command: &[String], tx: mpsc::Sender<Frame>) -> Result<PipeResult> {
+pub async fn spawn_piped(
+    command: &[String],
+    tx: mpsc::Sender<Frame>,
+    pid_tx: oneshot::Sender<u32>,
+) -> Result<PipeResult> {
     let (program, args) = command.split_first().expect("command must not be empty");
 
     let mut child = Command::new(program)
@@ -22,6 +26,9 @@ pub async fn spawn_piped(command: &[String], tx: mpsc::Sender<Frame>) -> Result<
         .spawn()?;
 
     let pid = child.id().unwrap_or(0);
+
+    // Notify caller of PID immediately, before waiting for child to exit
+    let _ = pid_tx.send(pid);
 
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");

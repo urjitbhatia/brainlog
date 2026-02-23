@@ -8,7 +8,7 @@ use std::ffi::CString;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::storage::models::{Frame, StreamType};
 
@@ -19,7 +19,11 @@ pub struct PtyResult {
     pub pid: u32,
 }
 
-pub async fn spawn_pty(command: &[String], tx: mpsc::Sender<Frame>) -> Result<PtyResult> {
+pub async fn spawn_pty(
+    command: &[String],
+    tx: mpsc::Sender<Frame>,
+    pid_tx: oneshot::Sender<u32>,
+) -> Result<PtyResult> {
     let (program, _args) = command.split_first().expect("command must not be empty");
 
     // Save terminal state before forkpty
@@ -47,6 +51,9 @@ pub async fn spawn_pty(command: &[String], tx: mpsc::Sender<Frame>) -> Result<Pt
         }
         ForkptyResult::Parent { child, master } => {
             let child_pid = child.as_raw() as u32;
+
+            // Notify caller of PID immediately, before waiting for child to exit
+            let _ = pid_tx.send(child_pid);
 
             // Set stdin to raw mode
             if saved_termios.is_some() {

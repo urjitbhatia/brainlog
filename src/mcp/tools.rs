@@ -31,6 +31,7 @@ fn discover_services_grouped(
 
     let name_filter = params.name.map(|n| n.to_lowercase());
     let exe_filter = params.executable.map(|e| e.to_lowercase());
+    let cwd_filter = params.cwd.map(|c| c.to_lowercase());
 
     let mut result = Vec::new();
     for group in groups {
@@ -48,6 +49,11 @@ fn discover_services_grouped(
         }
         if let Some(ref needle) = exe_filter {
             if !group.executable.to_lowercase().contains(needle) {
+                continue;
+            }
+        }
+        if let Some(ref needle) = cwd_filter {
+            if !group.working_dir.to_lowercase().contains(needle) {
                 continue;
             }
         }
@@ -156,6 +162,7 @@ fn discover_services_flat(
         &tag_filters,
         params.status.as_deref(),
         params.port,
+        params.cwd.as_deref(),
         limit,
     )?;
 
@@ -420,6 +427,7 @@ mod tests {
             tags: None,
             port: None,
             executable: None,
+            cwd: None,
             status: None,
             query: None,
             limit: None,
@@ -514,6 +522,23 @@ mod tests {
         assert!(preview.contains("retrying"), "should have last stdout line");
     }
 
+    #[tokio::test]
+    async fn discover_grouped_filter_by_cwd() {
+        let (db, _, _, _dir) = setup_test_env().await;
+
+        let mut params = default_params();
+        params.cwd = Some("project".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 1);
+
+        let mut params = default_params();
+        params.cwd = Some("/home/nonexistent".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 0);
+    }
+
     // ── discover_services (flat, group=false) ───────────────────────
 
     #[tokio::test]
@@ -561,6 +586,35 @@ mod tests {
         let mut params = default_params();
         params.group = Some(false);
         params.tags = Some(vec!["env:dev".to_string()]);
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.services.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn discover_flat_filter_by_cwd() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let mut params = default_params();
+        params.group = Some(false);
+        params.cwd = Some("project".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.services.len(), 1);
+
+        let mut params = default_params();
+        params.group = Some(false);
+        params.cwd = Some("/home/nonexistent".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.services.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn discover_flat_filter_by_cwd_case_insensitive() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let mut params = default_params();
+        params.group = Some(false);
+        params.cwd = Some("PROJECT".to_string());
         let value = discover_services(&db, params).unwrap();
         let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
         assert_eq!(resp.services.len(), 1);

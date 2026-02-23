@@ -237,6 +237,7 @@ impl Database {
         Ok(runs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn search_services(
         &self,
         name: Option<&str>,
@@ -244,6 +245,7 @@ impl Database {
         tag_filters: &[(String, String)],
         status: Option<&str>,
         port: Option<u16>,
+        cwd: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Service>> {
         let mut sql = String::from(
@@ -283,6 +285,12 @@ impl Database {
             let idx = param_values.len() + 1;
             conditions.push(format!("s.executable LIKE ?{}", idx));
             param_values.push(Box::new(format!("%{}%", exe_filter)));
+        }
+
+        if let Some(cwd_filter) = cwd {
+            let idx = param_values.len() + 1;
+            conditions.push(format!("s.working_dir LIKE ?{}", idx));
+            param_values.push(Box::new(format!("%{}%", cwd_filter)));
         }
 
         if let Some(status_filter) = status {
@@ -614,7 +622,7 @@ mod tests {
             .unwrap();
 
         let results = db
-            .search_services(Some("web"), None, &[], None, None, 100)
+            .search_services(Some("web"), None, &[], None, None, None, 100)
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -633,6 +641,7 @@ mod tests {
                 None,
                 None,
                 &[("env".to_string(), "prod".to_string())],
+                None,
                 None,
                 None,
                 100,
@@ -667,6 +676,7 @@ mod tests {
                 ],
                 None,
                 None,
+                None,
                 100,
             )
             .unwrap();
@@ -679,6 +689,7 @@ mod tests {
                 None,
                 None,
                 &[("env".to_string(), "prod".to_string())],
+                None,
                 None,
                 None,
                 100,
@@ -697,12 +708,12 @@ mod tests {
         db.add_port("run-sp1", 3000, "tcp").unwrap();
 
         let results = db
-            .search_services(None, None, &[], None, Some(3000), 100)
+            .search_services(None, None, &[], None, Some(3000), None, 100)
             .unwrap();
         assert_eq!(results.len(), 1);
 
         let empty = db
-            .search_services(None, None, &[], None, Some(9999), 100)
+            .search_services(None, None, &[], None, Some(9999), None, 100)
             .unwrap();
         assert!(empty.is_empty());
     }
@@ -846,7 +857,7 @@ mod tests {
         db.create_service(&newer).unwrap();
 
         let results = db
-            .search_services(Some("web"), None, &[], None, None, 100)
+            .search_services(Some("web"), None, &[], None, None, None, 100)
             .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(

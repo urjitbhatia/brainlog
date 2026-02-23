@@ -13,6 +13,8 @@ pub struct DiscoverServicesParams {
     pub port: Option<u16>,
     /// Filter by executable name (substring match)
     pub executable: Option<String>,
+    /// Filter by working directory of the tracked command (substring match)
+    pub cwd: Option<String>,
     /// Filter by run status: running, completed, failed
     pub status: Option<String>,
     /// Semantic search query (requires LLM)

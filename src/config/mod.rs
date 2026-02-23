@@ -13,7 +13,6 @@ pub struct Config {
     pub enrichment: EnrichmentConfig,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmConfig {
@@ -33,6 +32,38 @@ impl Default for LlmConfig {
             base_url: None,
             timeout_secs: 30,
         }
+    }
+}
+
+impl LlmConfig {
+    /// Resolve the API key, supporting environment variable references and
+    /// well-known fallback env vars.
+    ///
+    /// Resolution order:
+    /// 1. If `api_key` starts with `$`, look up the named environment variable.
+    /// 2. If `api_key` is a plain string (no `$` prefix), return it as-is.
+    /// 3. If `api_key` is `None`, check well-known env vars based on provider:
+    ///    - `"openai"` / `"openrouter"` / `"gemini"` -> `OPENAI_API_KEY`
+    ///    - `"anthropic"` / `"claude"` -> `ANTHROPIC_API_KEY`
+    /// 4. Return `None` if nothing matched.
+    pub fn resolve_api_key(&self) -> Option<String> {
+        if let Some(ref key) = self.api_key {
+            if let Some(var_name) = key.strip_prefix('$') {
+                // Env var reference: look it up
+                return std::env::var(var_name).ok();
+            }
+            // Plain literal key
+            return Some(key.clone());
+        }
+
+        // No explicit key — try well-known env vars based on provider
+        let provider = self.provider.as_deref()?;
+        let env_var = match provider {
+            "openai" | "openrouter" | "gemini" => "OPENAI_API_KEY",
+            "anthropic" | "claude" => "ANTHROPIC_API_KEY",
+            _ => return None,
+        };
+        std::env::var(env_var).ok()
     }
 }
 
@@ -194,5 +225,117 @@ mod tests {
             .project_file_patterns
             .contains(&"package.json".to_string()));
         assert_eq!(config.enrichment.max_file_preview_bytes, 2048);
+    }
+
+    #[test]
+    fn resolve_api_key_literal_value() {
+        let llm = LlmConfig {
+            api_key: Some("sk-my-literal-key".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(llm.resolve_api_key(), Some("sk-my-literal-key".to_string()));
+    }
+
+    #[test]
+    fn resolve_api_key_env_var_reference() {
+        // Use a unique env var name to avoid collisions with parallel tests
+        std::env::set_var("BRAINLOG_TEST_KEY_REF", "sk-from-env");
+        let llm = LlmConfig {
+            api_key: Some("$BRAINLOG_TEST_KEY_REF".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(llm.resolve_api_key(), Some("sk-from-env".to_string()));
+        std::env::remove_var("BRAINLOG_TEST_KEY_REF");
+    }
+
+    #[test]
+    fn resolve_api_key_env_var_reference_missing() {
+        // Reference to a non-existent env var should return None
+        std::env::remove_var("BRAINLOG_TEST_NONEXISTENT");
+        let llm = LlmConfig {
+            api_key: Some("$BRAINLOG_TEST_NONEXISTENT".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(llm.resolve_api_key(), None);
+    }
+
+    #[test]
+    fn resolve_api_key_fallback_openai() {
+        std::env::set_var("OPENAI_API_KEY", "sk-openai-fallback");
+        let llm = LlmConfig {
+            provider: Some("openai".to_string()),
+            api_key: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            llm.resolve_api_key(),
+            Some("sk-openai-fallback".to_string())
+        );
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn resolve_api_key_fallback_anthropic() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-anthropic-fallback");
+        let llm = LlmConfig {
+            provider: Some("anthropic".to_string()),
+            api_key: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            llm.resolve_api_key(),
+            Some("sk-anthropic-fallback".to_string())
+        );
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn resolve_api_key_fallback_claude_alias() {
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-claude-fallback");
+        let llm = LlmConfig {
+            provider: Some("claude".to_string()),
+            api_key: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            llm.resolve_api_key(),
+            Some("sk-claude-fallback".to_string())
+        );
+        std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn resolve_api_key_fallback_openrouter() {
+        std::env::set_var("OPENAI_API_KEY", "sk-openrouter-fallback");
+        let llm = LlmConfig {
+            provider: Some("openrouter".to_string()),
+            api_key: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            llm.resolve_api_key(),
+            Some("sk-openrouter-fallback".to_string())
+        );
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn resolve_api_key_none_when_no_provider() {
+        let llm = LlmConfig {
+            api_key: None,
+            provider: None,
+            ..Default::default()
+        };
+        assert_eq!(llm.resolve_api_key(), None);
+    }
+
+    #[test]
+    fn resolve_api_key_none_for_unknown_provider() {
+        let llm = LlmConfig {
+            api_key: None,
+            provider: Some("custom-provider".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(llm.resolve_api_key(), None);
     }
 }

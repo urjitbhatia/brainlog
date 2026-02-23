@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::path::Path;
 
 use crate::cli::LogsArgs;
@@ -11,7 +11,7 @@ pub async fn handle_logs(args: LogsArgs) -> Result<()> {
     let db = Database::open(&config.db_path())?;
 
     // Resolve ID to a log directory
-    let log_dir = resolve_log_dir(&db, &args.id)?;
+    let log_dir = db.resolve_log_dir(&args.id)?;
 
     let reader = LogReader::new(Path::new(&log_dir), args.stream);
 
@@ -30,38 +30,6 @@ pub async fn handle_logs(args: LogsArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn resolve_log_dir(db: &Database, id: &str) -> Result<String> {
-    // Try as run ID first
-    if let Some(run) = db.get_run(id)? {
-        return Ok(run.log_dir);
-    }
-
-    // Try as service ID — get latest run
-    if let Some(run) = db.get_latest_run(id)? {
-        return Ok(run.log_dir);
-    }
-
-    // Try as service name
-    if let Some(service) = db.find_service_by_name(id)? {
-        if let Some(run) = db.get_latest_run(&service.id)? {
-            return Ok(run.log_dir);
-        }
-        bail!("Service '{}' has no runs", id);
-    }
-
-    // Try partial ID match
-    let services = db.list_services()?;
-    for service in &services {
-        if service.id.starts_with(id) {
-            if let Some(run) = db.get_latest_run(&service.id)? {
-                return Ok(run.log_dir);
-            }
-        }
-    }
-
-    bail!("No service or run found matching '{}'", id);
 }
 
 async fn follow_logs(reader: &LogReader) -> Result<()> {

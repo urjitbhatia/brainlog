@@ -235,7 +235,7 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
     let strip_ansi = params.strip_ansi.unwrap_or(true);
 
     // Resolve ID to log dir
-    let log_dir = resolve_log_dir(db, &params.id)?;
+    let log_dir = db.resolve_log_dir(&params.id)?;
     let reader = LogReader::new(Path::new(&log_dir), stream);
 
     let frames = match mode {
@@ -333,7 +333,7 @@ pub fn search_logs(db: &Database, params: SearchLogsParams) -> Result<SearchLogs
 /// to the async polling loop. This two-phase design avoids holding a `&Database`
 /// reference across `.await` points (Database is not Sync).
 pub fn wait_for_pattern_resolve(db: &Database, params: &WaitForPatternParams) -> Result<String> {
-    resolve_log_dir(db, &params.id)
+    db.resolve_log_dir(&params.id)
 }
 
 pub async fn wait_for_pattern(
@@ -412,21 +412,6 @@ fn read_log_preview(log_dir: &str, tail_lines: usize) -> Option<String> {
         return None;
     }
     Some(frames_to_text(&frames))
-}
-
-fn resolve_log_dir(db: &Database, id: &str) -> Result<String> {
-    if let Some(run) = db.get_run(id)? {
-        return Ok(run.log_dir);
-    }
-    if let Some(run) = db.get_latest_run(id)? {
-        return Ok(run.log_dir);
-    }
-    if let Some(service) = db.find_service_by_name(id)? {
-        if let Some(run) = db.get_latest_run(&service.id)? {
-            return Ok(run.log_dir);
-        }
-    }
-    anyhow::bail!("No service or run found matching '{}'", id);
 }
 
 #[cfg(test)]
@@ -921,21 +906,21 @@ mod tests {
     #[tokio::test]
     async fn resolve_by_run_id() {
         let (db, _, run_id, dir) = setup_test_env().await;
-        let log_dir = resolve_log_dir(&db, &run_id).unwrap();
+        let log_dir = db.resolve_log_dir(&run_id).unwrap();
         assert_eq!(log_dir, dir.path().to_string_lossy());
     }
 
     #[tokio::test]
     async fn resolve_by_service_name() {
         let (db, _, _, dir) = setup_test_env().await;
-        let log_dir = resolve_log_dir(&db, "test-web").unwrap();
+        let log_dir = db.resolve_log_dir("test-web").unwrap();
         assert_eq!(log_dir, dir.path().to_string_lossy());
     }
 
     #[tokio::test]
     async fn resolve_unknown_id_fails() {
         let (db, _, _, _dir) = setup_test_env().await;
-        assert!(resolve_log_dir(&db, "no-such-thing").is_err());
+        assert!(db.resolve_log_dir("no-such-thing").is_err());
     }
 
     // ── strip_ansi ──────────────────────────────────────────────────

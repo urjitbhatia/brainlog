@@ -326,6 +326,66 @@ impl Database {
         Ok(services)
     }
 
+    /// Resolve a user-provided identifier to a log directory path.
+    ///
+    /// Resolution order:
+    /// 1. Exact match on run ID
+    /// 2. Exact match on service ID (returns latest run's log_dir)
+    /// 3. Exact match on service name (returns latest run's log_dir)
+    /// 4. Prefix match on service ID (exactly 1 match required)
+    /// 5. Error with helpful suggestion
+    pub fn resolve_log_dir(&self, id: &str) -> Result<String> {
+        // 1. Try as run ID first
+        if let Some(run) = self.get_run(id)? {
+            return Ok(run.log_dir);
+        }
+
+        // 2. Try as service ID — get latest run
+        if let Some(run) = self.get_latest_run(id)? {
+            return Ok(run.log_dir);
+        }
+
+        // 3. Try as service name
+        if let Some(service) = self.find_service_by_name(id)? {
+            if let Some(run) = self.get_latest_run(&service.id)? {
+                return Ok(run.log_dir);
+            }
+            anyhow::bail!("Service '{}' has no runs", id);
+        }
+
+        // 4. Try prefix match on service ID
+        let services = self.list_services()?;
+        let matches: Vec<_> = services.iter().filter(|s| s.id.starts_with(id)).collect();
+
+        match matches.len() {
+            1 => {
+                if let Some(run) = self.get_latest_run(&matches[0].id)? {
+                    return Ok(run.log_dir);
+                }
+                anyhow::bail!(
+                    "Service '{}' (matched from prefix '{}') has no runs",
+                    matches[0].id,
+                    id
+                );
+            }
+            n if n > 1 => {
+                let ids: Vec<_> = matches.iter().map(|s| s.id.as_str()).collect();
+                anyhow::bail!(
+                    "Ambiguous prefix '{}' matches {} services: {}",
+                    id,
+                    n,
+                    ids.join(", ")
+                );
+            }
+            _ => {}
+        }
+
+        anyhow::bail!(
+            "No service or run found matching '{}'. Use `brainlog list` to see available services.",
+            id
+        );
+    }
+
     /// Search services whose metadata (name, command line, tag values) matches
     /// the given regex pattern. Returns matching services along with the field
     /// that matched (for display purposes).

@@ -273,7 +273,9 @@ impl Database {
 
         if let Some(name_filter) = name {
             let idx = param_values.len() + 1;
-            conditions.push(format!("s.name LIKE ?{}", idx));
+            conditions.push(format!(
+                "(s.name LIKE ?{idx} OR s.id LIKE ?{idx} OR s.executable LIKE ?{idx})"
+            ));
             param_values.push(Box::new(format!("%{}%", name_filter)));
         }
 

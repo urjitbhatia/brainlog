@@ -46,6 +46,10 @@ pub struct RunArgs {
     #[arg(short, long)]
     pub name: Option<String>,
 
+    /// Resume a previous service by name (registers new command under the same name)
+    #[arg(short, long, value_name = "NAME")]
+    pub resume: Option<String>,
+
     /// Tags in key:value format
     #[arg(short, long, value_delimiter = ',')]
     pub tag: Vec<String>,
@@ -215,6 +219,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
 
     // Parse brainlog's own flags before the command
     let mut name: Option<String> = None;
+    let mut resume: Option<String> = None;
     let mut tags: Vec<String> = Vec::new();
     let mut desc: Option<String> = None;
     let mut command_start = 1;
@@ -226,6 +231,15 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
             "--name" | "-n" => {
                 if i + 1 < args.len() {
                     name = Some(args[i + 1].clone());
+                    i += 2;
+                    command_start = i;
+                } else {
+                    break;
+                }
+            }
+            "--resume" | "-r" => {
+                if i + 1 < args.len() {
+                    resume = Some(args[i + 1].clone());
                     i += 2;
                     command_start = i;
                 } else {
@@ -261,6 +275,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
 
     Some(RunArgs {
         name,
+        resume,
         tag: tags,
         desc,
         command,
@@ -352,6 +367,46 @@ mod tests {
         let run_args = result.unwrap();
         assert_eq!(run_args.tag, vec!["env:prod", "team:backend"]);
         assert_eq!(run_args.command, vec!["echo", "hi"]);
+    }
+
+    #[test]
+    fn direct_mode_with_resume_flag() {
+        let result = parse_direct_mode(&args(&[
+            "brainlog",
+            "--resume",
+            "my-app",
+            "node",
+            "server.js",
+        ]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.resume.as_deref(), Some("my-app"));
+        assert_eq!(run_args.command, vec!["node", "server.js"]);
+        assert!(run_args.name.is_none());
+    }
+
+    #[test]
+    fn direct_mode_with_resume_short_flag() {
+        let result = parse_direct_mode(&args(&["brainlog", "-r", "my-app", "python", "app.py"]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.resume.as_deref(), Some("my-app"));
+        assert_eq!(run_args.command, vec!["python", "app.py"]);
+    }
+
+    #[test]
+    fn direct_mode_resume_with_other_flags() {
+        let result = parse_direct_mode(&args(&[
+            "brainlog",
+            "--resume",
+            "my-app",
+            "--tag",
+            "env:staging",
+            "cargo",
+            "run",
+        ]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.resume.as_deref(), Some("my-app"));
+        assert_eq!(run_args.tag, vec!["env:staging"]);
+        assert_eq!(run_args.command, vec!["cargo", "run"]);
     }
 
     // --- Tag validation tests ---

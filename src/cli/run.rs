@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::llm;
 use crate::platform;
 use crate::process;
+use crate::process::capture::now_ns;
 use crate::storage::models::*;
 use crate::storage::{Database, LogWriter};
 
@@ -19,14 +20,38 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     let working_dir = std::env::current_dir()?.to_string_lossy().to_string();
     let executable = args.command[0].clone();
 
-    // Find or create service
-    let service_id = if let Some(ref name) = args.name {
+    // Determine the service name for resume hint later
+    let effective_name: Option<String>;
+    let resumed_from: Option<String>; // old service id if resuming
+
+    // Handle --resume: supersede old service, create new one with same name
+    let service_id = if let Some(ref resume_name) = args.resume {
+        let old_service = db.supersede_service(resume_name)?;
+        let old_service_id = old_service.as_ref().map(|s| s.id.clone());
+
+        if old_service.is_none() {
+            eprintln!(
+                "brainlog: warning: no existing service named '{}' found, creating new",
+                resume_name
+            );
+        }
+
+        effective_name = Some(resume_name.clone());
+        resumed_from = old_service_id;
+
+        // Create a new service with the resume name
+        create_service_with_name(&db, &config, resume_name, &args, &executable, &working_dir)?
+    } else if let Some(ref name) = args.name {
+        effective_name = Some(name.clone());
+        resumed_from = None;
         if let Some(existing) = db.find_service_by_name(name)? {
             existing.id
         } else {
             create_service(&db, &config, &args, &executable, &working_dir)?
         }
     } else {
+        effective_name = None;
+        resumed_from = None;
         create_service(&db, &config, &args, &executable, &working_dir)?
     };
 
@@ -62,6 +87,22 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     );
     let log_handle = tokio::spawn(async move { log_writer.run().await });
 
+    // If resuming, inject an artificial log entry noting the restart
+    if let Some(ref old_id) = resumed_from {
+        let resume_msg = format!(
+            "[brainlog] Resumed service (previous service id: {}). Command: {}\n",
+            old_id,
+            args.command.join(" ")
+        );
+        let _ = tx
+            .send(Frame {
+                timestamp_ns: now_ns(),
+                stream_type: StreamType::Stderr,
+                payload: resume_msg.into_bytes(),
+            })
+            .await;
+    }
+
     // PID channel — child sends PID immediately after spawn, before exiting
     let (pid_tx, pid_rx) = oneshot::channel::<u32>();
 
@@ -77,7 +118,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     let command_bg = args.command.clone();
     let tags_bg = args.tag.clone();
     let desc_bg = args.desc.clone();
-    let has_user_name = args.name.is_some();
+    let has_user_name = args.name.is_some() || args.resume.is_some();
     let port_cancel_bg = port_cancel.clone();
     let db_path_bg = db_path.clone();
 
@@ -125,10 +166,24 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     });
 
     // Spawn the wrapped process — PID is sent via pid_tx immediately after fork/spawn
-    let spawn_result = process::spawn_wrapped(&args.command, tx, pid_tx).await?;
+    let spawn_result = process::spawn_wrapped(&args.command, tx.clone(), pid_tx).await?;
 
     // Wait for background setup task to complete
     let _ = bg_handle.await;
+
+    // Inject an artificial exit log frame recording how the process exited
+    let exit_code = spawn_result.exit_code.unwrap_or(1);
+    let exit_msg = format_exit_message(exit_code);
+    let _ = tx
+        .send(Frame {
+            timestamp_ns: now_ns(),
+            stream_type: StreamType::Stderr,
+            payload: exit_msg.into_bytes(),
+        })
+        .await;
+
+    // Drop the sender so the log writer can finish
+    drop(tx);
 
     // Wait for log writer to finish
     if let Err(e) = log_handle.await {
@@ -139,13 +194,23 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     port_cancel.cancel();
 
     // Update run status
-    let exit_code = spawn_result.exit_code.unwrap_or(1);
     let status = if exit_code == 0 {
         RunStatus::Completed
     } else {
         RunStatus::Failed
     };
     db.update_run_status(&run_id, &status, Some(exit_code))?;
+
+    // Print resume hint to stderr
+    let svc_name = if let Some(name) = effective_name {
+        name
+    } else {
+        // Try to get the name from the DB (may have been enriched)
+        db.get_service(&service_id)?
+            .and_then(|s| s.name)
+            .unwrap_or_else(|| service_id.clone())
+    };
+    print_resume_hint(&svc_name, &args.command);
 
     Ok(exit_code)
 }
@@ -180,6 +245,94 @@ fn create_service(
     };
     db.create_service(&service)?;
     Ok(service_id)
+}
+
+fn create_service_with_name(
+    db: &Database,
+    config: &Config,
+    name: &str,
+    args: &RunArgs,
+    executable: &str,
+    working_dir: &str,
+) -> Result<String> {
+    let service_id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    let service = Service {
+        id: service_id.clone(),
+        name: Some(name.to_string()),
+        description: args.desc.clone(),
+        executable: executable.to_string(),
+        command_line: args.command.clone(),
+        working_dir: working_dir.to_string(),
+        created_at: now,
+        updated_at: now,
+        enrichment_status: if config.enrichment.enabled {
+            EnrichmentStatus::Pending
+        } else {
+            EnrichmentStatus::Skipped
+        },
+    };
+    db.create_service(&service)?;
+    Ok(service_id)
+}
+
+/// Format a human-readable exit message for the artificial log entry.
+fn format_exit_message(exit_code: i32) -> String {
+    if exit_code == 0 {
+        "[brainlog] Process exited normally (exit code: 0)\n".to_string()
+    } else if exit_code > 128 {
+        let signal = exit_code - 128;
+        let signal_name = match signal {
+            1 => "SIGHUP",
+            2 => "SIGINT",
+            3 => "SIGQUIT",
+            6 => "SIGABRT",
+            9 => "SIGKILL",
+            11 => "SIGSEGV",
+            13 => "SIGPIPE",
+            14 => "SIGALRM",
+            15 => "SIGTERM",
+            _ => "unknown",
+        };
+        format!(
+            "[brainlog] Process killed by signal {} ({}, exit code: {})\n",
+            signal, signal_name, exit_code
+        )
+    } else {
+        format!(
+            "[brainlog] Process exited with error (exit code: {})\n",
+            exit_code
+        )
+    }
+}
+
+/// Print a resume hint to stderr so the user knows how to restart.
+fn print_resume_hint(name: &str, command: &[String]) {
+    let cmd_str = command
+        .iter()
+        .map(|s| shell_quote(s))
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!();
+    eprintln!(
+        "To resume under the same name, run:\n  brainlog --resume {} {}",
+        shell_quote(name),
+        cmd_str,
+    );
+}
+
+/// Simple shell quoting: wrap in single quotes if the string contains special characters.
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/' || c == ':'
+    }) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 /// Noise subcommands that are filtered out of derived names.
@@ -268,5 +421,48 @@ mod tests {
         let name = derive_name("/", &["ls".to_string()]);
         // Root has no basename, so just the command part
         assert_eq!(name, "ls");
+    }
+
+    #[test]
+    fn format_exit_message_normal() {
+        let msg = format_exit_message(0);
+        assert!(msg.contains("exit code: 0"));
+        assert!(msg.contains("exited normally"));
+    }
+
+    #[test]
+    fn format_exit_message_error() {
+        let msg = format_exit_message(1);
+        assert!(msg.contains("exit code: 1"));
+        assert!(msg.contains("exited with error"));
+    }
+
+    #[test]
+    fn format_exit_message_sigint() {
+        let msg = format_exit_message(130);
+        assert!(msg.contains("SIGINT"));
+        assert!(msg.contains("signal 2"));
+        assert!(msg.contains("exit code: 130"));
+    }
+
+    #[test]
+    fn format_exit_message_sigterm() {
+        let msg = format_exit_message(143);
+        assert!(msg.contains("SIGTERM"));
+        assert!(msg.contains("signal 15"));
+    }
+
+    #[test]
+    fn format_exit_message_sigkill() {
+        let msg = format_exit_message(137);
+        assert!(msg.contains("SIGKILL"));
+        assert!(msg.contains("signal 9"));
+    }
+
+    #[test]
+    fn format_exit_message_unknown_signal() {
+        let msg = format_exit_message(159); // 128 + 31
+        assert!(msg.contains("unknown"));
+        assert!(msg.contains("signal 31"));
     }
 }

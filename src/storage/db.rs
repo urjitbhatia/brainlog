@@ -555,6 +555,21 @@ impl Database {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Mark an existing service as superseded by renaming it with a `_superseded_<timestamp>` suffix.
+    /// Returns the old service if found.
+    pub fn supersede_service(&self, name: &str) -> Result<Option<Service>> {
+        let existing = self.find_service_by_name(name)?;
+        if let Some(ref service) = existing {
+            let timestamp = Utc::now().format("%Y%m%d%H%M%S");
+            let new_name = format!("{}_superseded_{}", name, timestamp);
+            self.conn.execute(
+                "UPDATE services SET name = ?1, updated_at = ?2 WHERE id = ?3",
+                params![new_name, Utc::now().to_rfc3339(), service.id],
+            )?;
+        }
+        Ok(existing)
+    }
 }
 
 /// Information about a service that is a candidate for purging.
@@ -984,6 +999,30 @@ mod tests {
             results[1].id, "svc-search-old",
             "oldest created_at should come last in search"
         );
+    }
+
+    #[test]
+    fn supersede_service_renames_old() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-sup", Some("my-app")))
+            .unwrap();
+
+        let old = db.supersede_service("my-app").unwrap().unwrap();
+        assert_eq!(old.id, "svc-sup");
+        assert_eq!(old.name.as_deref(), Some("my-app"));
+
+        // Old service should no longer be findable by original name
+        assert!(db.find_service_by_name("my-app").unwrap().is_none());
+
+        // Old service should have a superseded name
+        let updated = db.get_service("svc-sup").unwrap().unwrap();
+        assert!(updated.name.unwrap().starts_with("my-app_superseded_"));
+    }
+
+    #[test]
+    fn supersede_nonexistent_returns_none() {
+        let db = Database::open_in_memory().unwrap();
+        assert!(db.supersede_service("nonexistent").unwrap().is_none());
     }
 
     #[test]

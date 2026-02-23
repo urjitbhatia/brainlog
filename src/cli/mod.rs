@@ -1,3 +1,4 @@
+pub mod kill;
 pub mod list;
 pub mod logs;
 pub mod mcp;
@@ -31,6 +32,8 @@ pub enum Commands {
     Logs(LogsArgs),
     /// Search logs by pattern
     Search(SearchArgs),
+    /// Send a signal to a running monitored process
+    Kill(KillArgs),
     /// Start the MCP server (stdio transport)
     Mcp,
     /// Purge old services and their logs
@@ -164,12 +167,27 @@ pub struct PurgeArgs {
     pub force: bool,
 }
 
+#[derive(Parser, Debug)]
+pub struct KillArgs {
+    /// Service name, ID, or ID prefix
+    pub target: String,
+
+    /// Signal to send (default: TERM). Supports: TERM, KILL, INT, HUP, USR1, USR2, QUIT, or numeric
+    #[arg(short, long, default_value = "TERM")]
+    pub signal: String,
+
+    /// Shorthand for --signal KILL (SIGKILL)
+    #[arg(short, long)]
+    pub force: bool,
+}
+
 /// Known subcommand names for direct mode detection
 pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "run",
     "list",
     "logs",
     "search",
+    "kill",
     "mcp",
     "purge",
     "help",

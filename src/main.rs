@@ -73,6 +73,13 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::Kill(args)) => match cli::kill::handle_kill(args).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("brainlog: {:#}", e);
+                ExitCode::FAILURE
+            }
+        },
         Some(Commands::Mcp) => match cli::mcp::handle_mcp().await {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {

@@ -77,6 +77,27 @@ Exposes three tools over stdio transport:
 
 Frame format: `[timestamp_ns:u64 LE][stream_type:u8][length:u32 LE][payload]`
 
+## Agent Review
+
+**Score: 7/10** — Reviewed by Claude Code (Opus 4.6), 2026-02-22
+
+Used BrainLog MCP during a multi-step feature implementation (Slack notifications for auto-matched watchlist items). The core loop of discover → tail → search worked well and provided real value during end-to-end testing.
+
+**What worked well:**
+- Service discovery found the API server and web UI quickly
+- Tailing logs gave real-time visibility into server behavior without asking the user to copy/paste terminal output
+- Error search across services was fast and confirmed clean state after a database migration
+- Overall, the tool tightened the feedback loop between "user does something in the UI" and "agent verifies what happened server-side"
+
+**What would get it to 10/10:**
+- Service discovery returns too many unnamed entries (MCP self-instances, no auto-naming)
+- Log output includes raw ANSI escape codes — needs a strip option
+- Port auto-detection didn't work for the web UI
+- No incremental polling (`since` cursor) — had to re-fetch and eyeball diffs
+- A `wait_for_pattern` blocking call would be transformative for E2E observation
+
+See [UX_FEEDBACK.md](./UX_FEEDBACK.md) for detailed feedback.
+
 ## License
 
 MIT

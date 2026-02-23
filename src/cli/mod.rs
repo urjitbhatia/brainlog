@@ -158,11 +158,15 @@ pub struct PurgeArgs {
     #[arg(long)]
     pub before: String,
 
+    /// Only purge services whose command line contains this string
+    #[arg(long, allow_hyphen_values = true)]
+    pub command: Option<String>,
+
     /// Show what would be purged without deleting
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Skip confirmation prompt
+    /// Skip confirmation prompt and also purge running/stale services
     #[arg(long)]
     pub force: bool,
 }

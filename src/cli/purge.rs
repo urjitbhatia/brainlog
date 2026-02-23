@@ -57,10 +57,16 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
 
-    let candidates = db.find_purgeable_services(&cutoff, args.force)?;
+    let mut candidates = db.find_purgeable_services(&cutoff, args.force)?;
+
+    // Filter by command substring if specified
+    if let Some(ref cmd_filter) = args.command {
+        let needle = cmd_filter.to_lowercase();
+        candidates.retain(|c| c.command_line.join(" ").to_lowercase().contains(&needle));
+    }
 
     if candidates.is_empty() {
-        println!("No services found older than {}.", args.before);
+        println!("No services found matching criteria.");
         return Ok(());
     }
 

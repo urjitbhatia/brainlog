@@ -206,6 +206,16 @@ impl fmt::Display for LogMode {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ServiceGroup {
+    pub executable: String,
+    pub working_dir: String,
+    pub run_count: usize,
+    pub latest_run_at: Option<DateTime<Utc>>,
+    pub latest_run_status: Option<RunStatus>,
+    pub services: Vec<Service>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

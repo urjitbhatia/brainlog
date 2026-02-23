@@ -96,6 +96,10 @@ pub struct ListArgs {
     /// Show detailed info
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Group services by executable and working directory
+    #[arg(short, long)]
+    pub group: bool,
 }
 
 #[derive(Parser, Debug)]

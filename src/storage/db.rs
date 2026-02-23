@@ -383,6 +383,58 @@ impl Database {
         Ok(matches)
     }
 
+    pub fn count_runs(&self, service_id: &str) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM runs WHERE service_id = ?1",
+            params![service_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    pub fn list_services_grouped(&self) -> Result<Vec<ServiceGroup>> {
+        let services = self.list_services()?;
+        let mut groups: std::collections::HashMap<(String, String), Vec<Service>> =
+            std::collections::HashMap::new();
+
+        for service in services {
+            let key = (service.executable.clone(), service.working_dir.clone());
+            groups.entry(key).or_default().push(service);
+        }
+
+        let mut result: Vec<ServiceGroup> = Vec::new();
+        for ((executable, working_dir), svcs) in groups {
+            let mut total_runs: usize = 0;
+            let mut latest_run_at: Option<chrono::DateTime<Utc>> = None;
+            let mut latest_run_status: Option<RunStatus> = None;
+
+            for svc in &svcs {
+                total_runs += self.count_runs(&svc.id)?;
+                if let Some(run) = self.get_latest_run(&svc.id)? {
+                    let dominated = latest_run_at.map(|t| run.started_at > t).unwrap_or(true);
+                    if dominated {
+                        latest_run_at = Some(run.started_at);
+                        latest_run_status = Some(run.status);
+                    }
+                }
+            }
+
+            result.push(ServiceGroup {
+                executable,
+                working_dir,
+                run_count: total_runs,
+                latest_run_at,
+                latest_run_status,
+                services: svcs,
+            });
+        }
+
+        // Sort by most recent run first (groups with no runs go last)
+        result.sort_by(|a, b| b.latest_run_at.cmp(&a.latest_run_at));
+
+        Ok(result)
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -1051,6 +1103,186 @@ mod tests {
             .matched_fields
             .iter()
             .any(|f| f.starts_with("description:")));
+    }
+
+    // --- Grouping tests ---
+
+    fn make_service_with(
+        id: &str,
+        name: Option<&str>,
+        executable: &str,
+        command_line: &[&str],
+        working_dir: &str,
+    ) -> Service {
+        Service {
+            id: id.to_string(),
+            name: name.map(|s| s.to_string()),
+            description: Some("test".to_string()),
+            executable: executable.to_string(),
+            command_line: command_line.iter().map(|s| s.to_string()).collect(),
+            working_dir: working_dir.to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            enrichment_status: EnrichmentStatus::Pending,
+        }
+    }
+
+    #[test]
+    fn list_services_grouped_basic() {
+        let db = Database::open_in_memory().unwrap();
+
+        db.create_service(&make_service_with(
+            "g1",
+            Some("make-dev"),
+            "make",
+            &["make", "dev"],
+            "/home/user/project",
+        ))
+        .unwrap();
+        db.create_service(&make_service_with(
+            "g2",
+            Some("make-dev-port"),
+            "make",
+            &["make", "dev", "--port=3000"],
+            "/home/user/project",
+        ))
+        .unwrap();
+        db.create_service(&make_service_with(
+            "g3",
+            Some("cargo-test"),
+            "cargo",
+            &["cargo", "test"],
+            "/home/user/project",
+        ))
+        .unwrap();
+
+        let groups = db.list_services_grouped().unwrap();
+        assert_eq!(groups.len(), 2);
+
+        let make_group = groups.iter().find(|g| g.executable == "make").unwrap();
+        assert_eq!(make_group.services.len(), 2);
+        assert_eq!(make_group.working_dir, "/home/user/project");
+
+        let cargo_group = groups.iter().find(|g| g.executable == "cargo").unwrap();
+        assert_eq!(cargo_group.services.len(), 1);
+    }
+
+    #[test]
+    fn list_services_grouped_run_counts() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with(
+            "rc1",
+            Some("app1"),
+            "node",
+            &["node", "app.js"],
+            "/project",
+        ))
+        .unwrap();
+        db.create_service(&make_service_with(
+            "rc2",
+            Some("app2"),
+            "node",
+            &["node", "app.js", "--watch"],
+            "/project",
+        ))
+        .unwrap();
+
+        let mut run1 = make_run("run-rc1a", "rc1", RunStatus::Completed);
+        run1.started_at = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_run(&run1).unwrap();
+
+        let mut run2 = make_run("run-rc1b", "rc1", RunStatus::Completed);
+        run2.started_at = chrono::DateTime::parse_from_rfc3339("2024-02-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_run(&run2).unwrap();
+
+        let mut run3 = make_run("run-rc2a", "rc2", RunStatus::Running);
+        run3.started_at = chrono::DateTime::parse_from_rfc3339("2024-06-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_run(&run3).unwrap();
+
+        let groups = db.list_services_grouped().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].run_count, 3);
+        assert_eq!(groups[0].latest_run_status, Some(RunStatus::Running));
+    }
+
+    #[test]
+    fn list_services_grouped_sorted_by_latest_run() {
+        let db = Database::open_in_memory().unwrap();
+
+        db.create_service(&make_service_with(
+            "s1",
+            Some("old"),
+            "python",
+            &["python", "old.py"],
+            "/old",
+        ))
+        .unwrap();
+        db.create_service(&make_service_with(
+            "s2",
+            Some("new"),
+            "python",
+            &["python", "new.py"],
+            "/new",
+        ))
+        .unwrap();
+
+        let mut old_run = make_run("run-old", "s1", RunStatus::Completed);
+        old_run.started_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_run(&old_run).unwrap();
+
+        let mut new_run = make_run("run-new", "s2", RunStatus::Running);
+        new_run.started_at = chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_run(&new_run).unwrap();
+
+        let groups = db.list_services_grouped().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].working_dir, "/new");
+        assert_eq!(groups[1].working_dir, "/old");
+    }
+
+    #[test]
+    fn list_services_grouped_no_runs() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service_with(
+            "nr1",
+            Some("no-run"),
+            "echo",
+            &["echo", "hello"],
+            "/tmp",
+        ))
+        .unwrap();
+
+        let groups = db.list_services_grouped().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].run_count, 0);
+        assert!(groups[0].latest_run_at.is_none());
+        assert!(groups[0].latest_run_status.is_none());
+    }
+
+    #[test]
+    fn count_runs_returns_correct_count() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("cr-svc", Some("counter")))
+            .unwrap();
+
+        assert_eq!(db.count_runs("cr-svc").unwrap(), 0);
+
+        db.create_run(&make_run("cr-run1", "cr-svc", RunStatus::Completed))
+            .unwrap();
+        db.create_run(&make_run("cr-run2", "cr-svc", RunStatus::Running))
+            .unwrap();
+
+        assert_eq!(db.count_runs("cr-svc").unwrap(), 2);
     }
 }
 

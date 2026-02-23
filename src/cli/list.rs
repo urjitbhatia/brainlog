@@ -20,6 +20,10 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
 
+    if args.group {
+        return handle_list_grouped(&db, &args);
+    }
+
     let services = if let Some(ref name) = args.name {
         db.search_services(Some(name), None, &[], None, None, 100)?
     } else {
@@ -94,6 +98,92 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
                 service.command_line.join(" ")
             );
         }
+    }
+
+    Ok(())
+}
+
+fn shorten_home(path: &str) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if let Some(rest) = path.strip_prefix(&home) {
+            return format!("~{}", rest);
+        }
+    }
+    path.to_string()
+}
+
+fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
+    let groups = db.list_services_grouped()?;
+
+    let groups: Vec<_> = if let Some(ref name_filter) = args.name {
+        let needle = name_filter.to_lowercase();
+        groups
+            .into_iter()
+            .filter(|g| {
+                g.services.iter().any(|s| {
+                    s.name
+                        .as_deref()
+                        .map(|n| n.to_lowercase().contains(&needle))
+                        .unwrap_or(false)
+                        || s.executable.to_lowercase().contains(&needle)
+                })
+            })
+            .collect()
+    } else {
+        groups
+    };
+
+    if groups.is_empty() {
+        println!("No services found.");
+        return Ok(());
+    }
+
+    for group in &groups {
+        let latest_ts = group
+            .latest_run_at
+            .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| "never".to_string());
+
+        let latest_status = group
+            .latest_run_status
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("no runs");
+
+        let dir = shorten_home(&group.working_dir);
+
+        println!(
+            "[ {} ] in {}  ({} runs, latest: {} {})",
+            group.executable, dir, group.run_count, latest_status, latest_ts
+        );
+
+        let mut commands: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for svc in &group.services {
+            commands.insert(svc.command_line.join(" "));
+        }
+        for cmd in &commands {
+            println!("  $ {}", cmd);
+        }
+
+        if args.verbose {
+            for svc in &group.services {
+                let name = svc.name.as_deref().unwrap_or("-");
+                let status = if let Some(run) = db.get_latest_run(&svc.id)? {
+                    run.status.as_str().to_string()
+                } else {
+                    "no runs".to_string()
+                };
+                println!(
+                    "    {} {:<20} {:<12} {}",
+                    &svc.id[..8],
+                    name,
+                    status,
+                    svc.command_line.join(" ")
+                );
+            }
+        }
+
+        println!();
     }
 
     Ok(())

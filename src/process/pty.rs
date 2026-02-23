@@ -52,7 +52,11 @@ pub async fn spawn_pty(command: &[String], tx: mpsc::Sender<Frame>) -> Result<Pt
             if saved_termios.is_some() {
                 if let Ok(mut raw) = termios::tcgetattr(std::io::stdin()) {
                     termios::cfmakeraw(&mut raw);
-                    let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw);
+                    if let Err(e) =
+                        termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &raw)
+                    {
+                        tracing::warn!("Failed to set terminal to raw mode: {e}");
+                    }
                 }
             }
 
@@ -61,7 +65,11 @@ pub async fn spawn_pty(command: &[String], tx: mpsc::Sender<Frame>) -> Result<Pt
 
             // Restore terminal
             if let Some(saved) = saved_termios {
-                let _ = termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &saved);
+                if let Err(e) =
+                    termios::tcsetattr(std::io::stdin(), termios::SetArg::TCSANOW, &saved)
+                {
+                    tracing::warn!("Failed to restore terminal settings: {e}");
+                }
             }
 
             result.map(|exit_code| PtyResult {
@@ -96,12 +104,18 @@ async fn run_pty_pump(master: OwnedFd, child: Pid, tx: mpsc::Sender<Frame>) -> R
                 Ok(0) => break,
                 Ok(n) => {
                     let payload = buf[..n].to_vec();
-                    let _ = std::io::Write::write_all(&mut std::io::stdout().lock(), &payload);
-                    let _ = tx_read.blocking_send(Frame {
+                    if let Err(e) =
+                        std::io::Write::write_all(&mut std::io::stdout().lock(), &payload)
+                    {
+                        tracing::warn!("Failed to write PTY output to stdout: {e}");
+                    }
+                    if let Err(e) = tx_read.blocking_send(Frame {
                         timestamp_ns: now_ns(),
                         stream_type: StreamType::Stdout,
                         payload,
-                    });
+                    }) {
+                        tracing::warn!("Failed to send PTY stdout frame to log channel: {e}");
+                    }
                 }
                 Err(nix::errno::Errno::EIO) => break,
                 Err(nix::errno::Errno::EAGAIN) => continue,
@@ -152,16 +166,20 @@ async fn run_pty_pump(master: OwnedFd, child: Pid, tx: mpsc::Sender<Frame>) -> R
                         Err(nix::errno::Errno::EIO) => break,
                         Err(_) => break,
                     }
-                    let _ = tx_write.blocking_send(Frame {
+                    if let Err(e) = tx_write.blocking_send(Frame {
                         timestamp_ns: now_ns(),
                         stream_type: StreamType::Stdin,
                         payload,
-                    });
+                    }) {
+                        tracing::warn!("Failed to send PTY stdin frame to log channel: {e}");
+                    }
                 }
                 Err(_) => break,
             }
         }
-        let _ = nix::unistd::close(fd);
+        if let Err(e) = nix::unistd::close(fd) {
+            tracing::warn!("Failed to close PTY master fd: {e}");
+        }
         Ok(())
     });
 
@@ -190,7 +208,11 @@ async fn run_pty_pump(master: OwnedFd, child: Pid, tx: mpsc::Sender<Frame>) -> R
     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
     read_handle.abort();
     // write_handle should exit on its own due to the done flag, but give it a moment
-    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(200), write_handle).await;
+    match tokio::time::timeout(tokio::time::Duration::from_millis(200), write_handle).await {
+        Ok(Err(e)) => tracing::warn!("PTY stdin writer task failed: {e}"),
+        Err(_) => tracing::debug!("PTY stdin writer did not finish within timeout, proceeding"),
+        _ => {}
+    }
 
     drop(tx);
 

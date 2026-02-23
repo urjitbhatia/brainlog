@@ -15,7 +15,11 @@ pub async fn poll_ports(pid: u32, run_id: &str, db_path: &Path, interval_secs: u
         if !ports.is_empty() {
             if let Ok(db) = Database::open(db_path) {
                 for port in ports {
-                    let _ = db.add_port(run_id, port, "tcp");
+                    if let Err(e) = db.add_port(run_id, port, "tcp") {
+                        tracing::warn!(
+                            "Failed to record detected port {port} for run {run_id}: {e}"
+                        );
+                    }
                 }
             }
         }

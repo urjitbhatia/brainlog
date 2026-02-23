@@ -107,7 +107,9 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     }
 
     // Wait for log writer to finish
-    let _ = log_handle.await;
+    if let Err(e) = log_handle.await {
+        tracing::error!("Log writer task failed: {e}");
+    }
 
     // Update run status
     let exit_code = spawn_result.exit_code.unwrap_or(1);

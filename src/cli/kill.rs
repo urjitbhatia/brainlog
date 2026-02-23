@@ -157,7 +157,7 @@ fn resolve_service(
     }
 }
 
-async fn collect_process_tree(root_pid: u32) -> Vec<u32> {
+pub async fn collect_process_tree(root_pid: u32) -> Vec<u32> {
     let mut tree = vec![root_pid];
     let mut to_visit = vec![root_pid];
 
@@ -175,7 +175,7 @@ async fn collect_process_tree(root_pid: u32) -> Vec<u32> {
     tree
 }
 
-async fn get_child_pids(parent_pid: u32) -> Result<Vec<u32>> {
+pub async fn get_child_pids(parent_pid: u32) -> Result<Vec<u32>> {
     let output = tokio::process::Command::new("pgrep")
         .args(["-P", &parent_pid.to_string()])
         .output()

@@ -1,10 +1,14 @@
 use anyhow::{bail, Result};
 use chrono::Utc;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
 use std::io::{self, Write};
 use std::time::Duration;
 
+use crate::cli::kill::collect_process_tree;
 use crate::cli::PurgeArgs;
 use crate::config::Config;
+use crate::storage::models::RunStatus;
 use crate::storage::Database;
 
 /// Parse a duration string like "10h", "30m", "5d", "3600s" into a `Duration`.
@@ -53,7 +57,7 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
 
-    let candidates = db.find_purgeable_services(&cutoff)?;
+    let candidates = db.find_purgeable_services(&cutoff, args.force)?;
 
     if candidates.is_empty() {
         println!("No services found older than {}.", args.before);
@@ -103,7 +107,29 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
     let mut total_services = 0;
     let mut total_runs = 0;
 
+    let mut killed_count = 0;
+
     for candidate in &candidates {
+        // Kill running processes before purging
+        if let Some(run) = db.get_latest_run(&candidate.service_id)? {
+            if run.status == RunStatus::Running {
+                if let Some(pid) = run.pid {
+                    let tree = collect_process_tree(pid).await;
+                    // Kill children first (deepest first), then parent
+                    let mut kill_order: Vec<u32> =
+                        tree.iter().copied().filter(|&p| p != pid).collect();
+                    kill_order.reverse();
+                    kill_order.push(pid);
+
+                    for target_pid in &kill_order {
+                        let nix_pid = Pid::from_raw(*target_pid as i32);
+                        let _ = signal::kill(nix_pid, Signal::SIGKILL);
+                    }
+                    killed_count += 1;
+                }
+            }
+        }
+
         // Collect log dirs before deleting DB records
         let log_dirs = db.get_run_log_dirs(&candidate.service_id)?;
 
@@ -124,10 +150,17 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
         total_runs += runs_deleted;
     }
 
-    println!(
-        "Purged {} service(s) and {} run(s).",
-        total_services, total_runs
-    );
+    if killed_count > 0 {
+        println!(
+            "Killed {} running process(es). Purged {} service(s) and {} run(s).",
+            killed_count, total_services, total_runs
+        );
+    } else {
+        println!(
+            "Purged {} service(s) and {} run(s).",
+            total_services, total_runs
+        );
+    }
 
     Ok(())
 }

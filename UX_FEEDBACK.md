@@ -41,3 +41,9 @@ Context: Tested wrapping Claude Code with brainlog (`brainlog run --name "claude
 - `BRAINLOG_SERVICE_NAME` env var would be a nice alternative to `--name` for scripted/automated launches.
 
 **Conclusion:** Agent-observes-agent via brainlog works. The `--name` + `discover_services` + `get_logs(strip_ansi=true)` pipeline is the path. Main gap is better terminal escape sequence stripping for TUI apps.
+
+---
+
+## Process Control
+
+13. **Kill a running process** — `brainlog kill <name|id>` to send SIGTERM (or SIGKILL with `--force`) to a process being monitored by brainlog. Useful for killing stuck processes or using brainlog as a central service control plane. Should also be exposed as an MCP tool so agents can stop services programmatically.

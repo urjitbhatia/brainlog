@@ -446,14 +446,32 @@ impl Database {
     }
 
     /// Find services whose latest run ended before `cutoff`, or that have no runs
-    /// and were created before `cutoff`.
+    /// and were created before `cutoff`. When `include_running` is true, also
+    /// includes services with running/stale runs that started before the cutoff.
     pub fn find_purgeable_services(
         &self,
         cutoff: &chrono::DateTime<Utc>,
+        include_running: bool,
     ) -> Result<Vec<PurgeCandidate>> {
         let cutoff_str = cutoff.to_rfc3339();
 
-        let sql = "
+        let running_clause = if include_running {
+            "OR (
+                -- Services with running/stale runs started before cutoff (force mode)
+                NOT EXISTS (
+                    SELECT 1 FROM runs r WHERE r.service_id = s.id
+                    AND r.started_at >= ?1
+                )
+                AND EXISTS (
+                    SELECT 1 FROM runs r WHERE r.service_id = s.id
+                )
+            )"
+        } else {
+            ""
+        };
+
+        let sql = format!(
+            "
             SELECT s.id, s.name, s.executable, s.command_line
             FROM services s
             WHERE (
@@ -473,9 +491,11 @@ impl Database {
                 )
                 AND s.created_at < ?1
             )
-        ";
+            {running_clause}
+        "
+        );
 
-        let mut stmt = self.conn.prepare(sql)?;
+        let mut stmt = self.conn.prepare(&sql)?;
         let candidates: Vec<PurgeCandidate> = stmt
             .query_map(params![cutoff_str], |row| {
                 let command_line_json: String = row.get(3)?;
@@ -1422,7 +1442,7 @@ mod tests {
         db.create_run(&new_run).unwrap();
 
         let cutoff = Utc::now() - chrono::Duration::days(1);
-        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        let candidates = db.find_purgeable_services(&cutoff, false).unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].service_id, "svc-old");
     }
@@ -1441,7 +1461,7 @@ mod tests {
             .unwrap();
 
         let cutoff = Utc::now() - chrono::Duration::days(1);
-        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        let candidates = db.find_purgeable_services(&cutoff, false).unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].service_id, "svc-noruns");
     }
@@ -1463,8 +1483,34 @@ mod tests {
         db.create_run(&run).unwrap();
 
         let cutoff = Utc::now() - chrono::Duration::days(1);
-        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        let candidates = db.find_purgeable_services(&cutoff, false).unwrap();
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn purge_force_includes_running_services() {
+        let db = Database::open_in_memory().unwrap();
+        let mut svc = make_service("svc-stale", Some("stale-app"));
+        svc.created_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&svc).unwrap();
+
+        let mut run = make_run("run-stale", "svc-stale", RunStatus::Running);
+        run.started_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        run.ended_at = None;
+        db.create_run(&run).unwrap();
+
+        let cutoff = Utc::now() - chrono::Duration::days(1);
+        // Without force: skipped
+        let candidates = db.find_purgeable_services(&cutoff, false).unwrap();
+        assert!(candidates.is_empty());
+        // With force: included
+        let candidates = db.find_purgeable_services(&cutoff, true).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].service_id, "svc-stale");
     }
 
     #[test]
@@ -1513,7 +1559,7 @@ mod tests {
     fn purge_empty_db_returns_no_candidates() {
         let db = Database::open_in_memory().unwrap();
         let cutoff = Utc::now() - chrono::Duration::days(1);
-        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        let candidates = db.find_purgeable_services(&cutoff, false).unwrap();
         assert!(candidates.is_empty());
     }
 }

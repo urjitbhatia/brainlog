@@ -254,16 +254,14 @@ impl Database {
         let mut conditions = Vec::new();
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        if !tag_filters.is_empty() {
-            joins.push(" JOIN tags t ON t.service_id = s.id");
-            let mut tag_conds = Vec::new();
-            for (k, v) in tag_filters {
-                let idx = param_values.len() + 1;
-                tag_conds.push(format!("(t.key = ?{} AND t.value = ?{})", idx, idx + 1));
-                param_values.push(Box::new(k.clone()));
-                param_values.push(Box::new(v.clone()));
-            }
-            conditions.push(format!("({})", tag_conds.join(" OR ")));
+        for (k, v) in tag_filters {
+            let idx = param_values.len() + 1;
+            conditions.push(format!(
+                "EXISTS (SELECT 1 FROM tags t WHERE t.service_id = s.id AND t.key = ?{} AND t.value = ?{})",
+                idx, idx + 1
+            ));
+            param_values.push(Box::new(k.clone()));
+            param_values.push(Box::new(v.clone()));
         }
 
         if let Some(port_val) = port {
@@ -588,6 +586,51 @@ mod tests {
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "svc-st1");
+    }
+
+    #[test]
+    fn search_services_by_multiple_tags_uses_and() {
+        let db = Database::open_in_memory().unwrap();
+        // Service A has both env:prod AND team:backend
+        db.create_service(&make_service("svc-mt1", Some("app-both")))
+            .unwrap();
+        db.add_tag("svc-mt1", "env", "prod").unwrap();
+        db.add_tag("svc-mt1", "team", "backend").unwrap();
+
+        // Service B has only env:prod
+        db.create_service(&make_service("svc-mt2", Some("app-one")))
+            .unwrap();
+        db.add_tag("svc-mt2", "env", "prod").unwrap();
+
+        // Filter by both tags — only Service A should match (AND semantics)
+        let results = db
+            .search_services(
+                None,
+                None,
+                &[
+                    ("env".to_string(), "prod".to_string()),
+                    ("team".to_string(), "backend".to_string()),
+                ],
+                None,
+                None,
+                100,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "svc-mt1");
+
+        // Filter by single tag — both services should match
+        let results = db
+            .search_services(
+                None,
+                None,
+                &[("env".to_string(), "prod".to_string())],
+                None,
+                None,
+                100,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 2);
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub fn discover_services(
         &tag_filters,
         params.status.as_deref(),
         params.port,
+        params.cwd.as_deref(),
         limit,
     )?;
 
@@ -276,6 +277,7 @@ mod tests {
             tags: None,
             port: None,
             executable: None,
+            cwd: None,
             status: None,
             query: None,
             limit: None,
@@ -303,6 +305,7 @@ mod tests {
             tags: None,
             port: None,
             executable: None,
+            cwd: None,
             status: None,
             query: None,
             limit: None,
@@ -316,6 +319,7 @@ mod tests {
             tags: None,
             port: None,
             executable: None,
+            cwd: None,
             status: None,
             query: None,
             limit: None,
@@ -332,6 +336,57 @@ mod tests {
             tags: Some(vec!["env:dev".to_string()]),
             port: None,
             executable: None,
+            cwd: None,
+            status: None,
+            query: None,
+            limit: None,
+        };
+        let resp = discover_services(&db, params).unwrap();
+        assert_eq!(resp.services.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn discover_filter_by_cwd() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // Matching substring (service working_dir is "/tmp/project")
+        let params = DiscoverServicesParams {
+            name: None,
+            tags: None,
+            port: None,
+            executable: None,
+            cwd: Some("project".to_string()),
+            status: None,
+            query: None,
+            limit: None,
+        };
+        let resp = discover_services(&db, params).unwrap();
+        assert_eq!(resp.services.len(), 1);
+
+        // Non-matching cwd
+        let params = DiscoverServicesParams {
+            name: None,
+            tags: None,
+            port: None,
+            executable: None,
+            cwd: Some("/home/nonexistent".to_string()),
+            status: None,
+            query: None,
+            limit: None,
+        };
+        let resp = discover_services(&db, params).unwrap();
+        assert_eq!(resp.services.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn discover_filter_by_cwd_case_insensitive() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // SQLite LIKE is case-insensitive for ASCII
+        let params = DiscoverServicesParams {
+            name: None,
+            tags: None,
+            port: None,
+            executable: None,
+            cwd: Some("PROJECT".to_string()),
             status: None,
             query: None,
             limit: None,

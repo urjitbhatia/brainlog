@@ -21,7 +21,7 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     let db = Database::open(&config.db_path())?;
 
     let services = if let Some(ref name) = args.name {
-        db.search_services(Some(name), None, &[], None, None, 100)?
+        db.search_services(Some(name), None, &[], None, None, None, 100)?
     } else {
         db.list_services()?
     };

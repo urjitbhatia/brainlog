@@ -3,6 +3,21 @@ use std::process::ExitCode;
 
 use brainlog::cli::{self, Cli, Commands};
 
+/// Convert an i32 process exit code to a u8 suitable for ExitCode.
+///
+/// - Negative values map to 1 (general failure)
+/// - Values 0-255 pass through unchanged
+/// - Values > 255 clamp to 255
+fn exit_code_to_u8(code: i32) -> u8 {
+    if code < 0 {
+        1
+    } else if code > 255 {
+        255
+    } else {
+        code as u8
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -18,7 +33,7 @@ async fn main() -> ExitCode {
     // Direct mode: if argv[1] is not a known subcommand, treat as a command to wrap
     if let Some(run_args) = cli::parse_direct_mode(&args) {
         match cli::run::handle_run(run_args).await {
-            Ok(code) => return ExitCode::from(code as u8),
+            Ok(code) => return ExitCode::from(exit_code_to_u8(code)),
             Err(e) => {
                 eprintln!("brainlog: {:#}", e);
                 return ExitCode::FAILURE;
@@ -31,7 +46,7 @@ async fn main() -> ExitCode {
 
     match cli.command {
         Some(Commands::Run(run_args)) => match cli::run::handle_run(run_args).await {
-            Ok(code) => ExitCode::from(code as u8),
+            Ok(code) => ExitCode::from(exit_code_to_u8(code)),
             Err(e) => {
                 eprintln!("brainlog: {:#}", e);
                 ExitCode::FAILURE
@@ -72,5 +87,50 @@ async fn main() -> ExitCode {
             println!();
             ExitCode::SUCCESS
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_exit_code_zero() {
+        assert_eq!(exit_code_to_u8(0), 0);
+    }
+
+    #[test]
+    fn test_exit_code_one() {
+        assert_eq!(exit_code_to_u8(1), 1);
+    }
+
+    #[test]
+    fn test_exit_code_general_values() {
+        assert_eq!(exit_code_to_u8(42), 42);
+        assert_eq!(exit_code_to_u8(127), 127);
+        assert_eq!(exit_code_to_u8(128), 128);
+    }
+
+    #[test]
+    fn test_exit_code_sigint() {
+        // 128 + 2 (SIGINT) = 130
+        assert_eq!(exit_code_to_u8(130), 130);
+    }
+
+    #[test]
+    fn test_exit_code_max_u8() {
+        assert_eq!(exit_code_to_u8(255), 255);
+    }
+
+    #[test]
+    fn test_exit_code_overflow_clamps_to_255() {
+        assert_eq!(exit_code_to_u8(256), 255);
+        assert_eq!(exit_code_to_u8(i32::MAX), 255);
+    }
+
+    #[test]
+    fn test_exit_code_negative_maps_to_one() {
+        assert_eq!(exit_code_to_u8(-1), 1);
+        assert_eq!(exit_code_to_u8(i32::MIN), 1);
     }
 }

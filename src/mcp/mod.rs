@@ -90,6 +90,35 @@ impl BrainlogMcp {
         let json = serde_json::to_string_pretty(&response).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
+
+    /// Wait for a regex pattern to appear in logs.
+    #[tool(
+        description = "Wait for a regex pattern to appear in logs (with timeout), like Playwright's wait_for_text. Blocks until the pattern is found or timeout is reached. Ideal for agents verifying async behavior end-to-end."
+    )]
+    async fn wait_for_pattern(
+        &self,
+        params: Parameters<WaitForPatternParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Phase 1: resolve the log directory synchronously (Database is not Sync).
+        let db = self.open_db()?;
+        let log_dir = tools::wait_for_pattern_resolve(&db, &params.0).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("{}", e).into(),
+            data: None,
+        })?;
+        drop(db);
+
+        // Phase 2: async polling loop (no &Database across await points).
+        let response = tools::wait_for_pattern(&log_dir, params.0)
+            .await
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: format!("{}", e).into(),
+                data: None,
+            })?;
+        let json = serde_json::to_string_pretty(&response).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
 }
 
 #[tool_handler]

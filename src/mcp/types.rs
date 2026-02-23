@@ -144,3 +144,33 @@ pub struct SearchMatch {
     pub timestamp_ns: u64,
     pub line: String,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WaitForPatternParams {
+    /// Service ID, service name, or run ID
+    pub id: String,
+    /// Regex pattern to match against log lines
+    pub pattern: String,
+    /// Which stream to watch: stdout, stderr, stdin, combined (default: combined)
+    pub stream: Option<StreamFilter>,
+    /// Timeout in seconds (default: 30)
+    pub timeout: Option<u64>,
+    /// How often to check for new logs in milliseconds (default: 500)
+    pub poll_interval_ms: Option<u64>,
+    /// Strip ANSI escape codes before matching (default: true)
+    pub strip_ansi: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WaitForPatternResponse {
+    /// Whether the pattern was found
+    pub matched: bool,
+    /// The matching line (if found)
+    pub line: Option<String>,
+    /// Timestamp of the matching frame in nanoseconds since epoch
+    pub timestamp_ns: Option<u64>,
+    /// How long the wait took in milliseconds
+    pub elapsed_ms: u64,
+    /// Whether the timeout was reached without finding a match
+    pub timed_out: bool,
+}

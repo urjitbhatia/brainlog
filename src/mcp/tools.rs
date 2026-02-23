@@ -1,6 +1,7 @@
 use anyhow::Result;
 use regex::Regex;
 use std::path::Path;
+use std::time::Instant;
 
 use crate::storage::logfile::{frames_to_text, LogReader};
 use crate::storage::models::{LogMode, StreamFilter};
@@ -326,6 +327,82 @@ pub fn search_logs(db: &Database, params: SearchLogsParams) -> Result<SearchLogs
         matches: all_matches,
         total_matches: total,
     })
+}
+
+/// Resolve the log directory from the database (synchronous), then delegate
+/// to the async polling loop. This two-phase design avoids holding a `&Database`
+/// reference across `.await` points (Database is not Sync).
+pub fn wait_for_pattern_resolve(db: &Database, params: &WaitForPatternParams) -> Result<String> {
+    resolve_log_dir(db, &params.id)
+}
+
+pub async fn wait_for_pattern(
+    log_dir: &str,
+    params: WaitForPatternParams,
+) -> Result<WaitForPatternResponse> {
+    let pattern = Regex::new(&params.pattern)?;
+    let stream = params.stream.unwrap_or_default();
+    let timeout_secs = params.timeout.unwrap_or(30);
+    let poll_interval_ms = params.poll_interval_ms.unwrap_or(500);
+    let should_strip_ansi = params.strip_ansi.unwrap_or(true);
+
+    let reader = LogReader::new(Path::new(log_dir), stream);
+
+    let start = Instant::now();
+    let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+    let poll_dur = std::time::Duration::from_millis(poll_interval_ms);
+
+    // Track the last-seen timestamp so we only scan new frames each iteration.
+    let mut last_seen_ts: u64 = 0;
+
+    loop {
+        // Read frames newer than what we have already checked.
+        // read_range uses >=, so we add 1 to skip already-seen frames.
+        let start_time = if last_seen_ts == 0 {
+            None
+        } else {
+            Some(last_seen_ts + 1)
+        };
+        let frames = reader.read_range(start_time, None)?;
+
+        for frame in &frames {
+            if frame.timestamp_ns > last_seen_ts {
+                last_seen_ts = frame.timestamp_ns;
+            }
+            if let Ok(text) = std::str::from_utf8(&frame.payload) {
+                for line in text.lines() {
+                    let matchable = if should_strip_ansi {
+                        strip_ansi_codes(line)
+                    } else {
+                        line.to_string()
+                    };
+                    if pattern.is_match(&matchable) {
+                        let elapsed_ms = start.elapsed().as_millis() as u64;
+                        return Ok(WaitForPatternResponse {
+                            matched: true,
+                            line: Some(matchable),
+                            timestamp_ns: Some(frame.timestamp_ns),
+                            elapsed_ms,
+                            timed_out: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        if start.elapsed() >= timeout_dur {
+            let elapsed_ms = start.elapsed().as_millis() as u64;
+            return Ok(WaitForPatternResponse {
+                matched: false,
+                line: None,
+                timestamp_ns: None,
+                elapsed_ms,
+                timed_out: true,
+            });
+        }
+
+        tokio::time::sleep(poll_dur).await;
+    }
 }
 
 fn read_log_preview(log_dir: &str, tail_lines: usize) -> Option<String> {
@@ -1088,5 +1165,198 @@ mod tests {
             !resp.matches[0].line.contains("\x1b["),
             "match line should strip ANSI codes by default"
         );
+    }
+
+    // ── wait_for_pattern ────────────────────────────────────────────
+
+    /// Test helper: resolve + wait_for_pattern in one call.
+    async fn test_wait_for_pattern(
+        db: &Database,
+        params: WaitForPatternParams,
+    ) -> Result<WaitForPatternResponse> {
+        let log_dir = wait_for_pattern_resolve(db, &params)?;
+        wait_for_pattern(&log_dir, params).await
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_finds_existing_match() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let params = WaitForPatternParams {
+            id: "test-web".to_string(),
+            pattern: "ERROR".to_string(),
+            stream: None,
+            timeout: Some(2),
+            poll_interval_ms: Some(100),
+            strip_ansi: None,
+        };
+        let resp = test_wait_for_pattern(&db, params).await.unwrap();
+        assert!(resp.matched);
+        assert!(!resp.timed_out);
+        assert!(resp.line.unwrap().contains("connection refused"));
+        assert_eq!(resp.timestamp_ns, Some(3_000_000_000));
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_times_out_when_no_match() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let params = WaitForPatternParams {
+            id: "test-web".to_string(),
+            pattern: "NEVER_APPEARS_IN_LOGS".to_string(),
+            stream: None,
+            timeout: Some(1),
+            poll_interval_ms: Some(200),
+            strip_ansi: None,
+        };
+        let resp = test_wait_for_pattern(&db, params).await.unwrap();
+        assert!(!resp.matched);
+        assert!(resp.timed_out);
+        assert!(resp.line.is_none());
+        assert!(resp.timestamp_ns.is_none());
+        assert!(resp.elapsed_ms >= 1000);
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_uses_alternation_regex() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let params = WaitForPatternParams {
+            id: "test-web".to_string(),
+            pattern: "server started|error".to_string(),
+            stream: None,
+            timeout: Some(2),
+            poll_interval_ms: Some(100),
+            strip_ansi: None,
+        };
+        let resp = test_wait_for_pattern(&db, params).await.unwrap();
+        assert!(resp.matched);
+        assert!(resp.line.unwrap().contains("server started"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_filters_by_stream() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let params = WaitForPatternParams {
+            id: "test-web".to_string(),
+            pattern: "ERROR".to_string(),
+            stream: Some(StreamFilter::Stderr),
+            timeout: Some(1),
+            poll_interval_ms: Some(200),
+            strip_ansi: None,
+        };
+        let resp = test_wait_for_pattern(&db, params).await.unwrap();
+        assert!(!resp.matched);
+        assert!(resp.timed_out);
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_strips_ansi_codes() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+        let log_dir_str = log_dir.to_string_lossy().to_string();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+        let ansi_payload = b"\x1b[31mERROR\x1b[0m: something failed\n";
+        tx.send(Frame {
+            timestamp_ns: 1_000_000,
+            stream_type: StreamType::Stdout,
+            payload: ansi_payload.to_vec(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let params = WaitForPatternParams {
+            id: String::new(),
+            pattern: "^ERROR: something".to_string(),
+            stream: None,
+            timeout: Some(2),
+            poll_interval_ms: Some(100),
+            strip_ansi: Some(true),
+        };
+        let resp = wait_for_pattern(&log_dir_str, params).await.unwrap();
+        assert!(resp.matched);
+        let line = resp.line.unwrap();
+        assert!(!line.contains("\x1b["));
+        assert!(line.contains("ERROR: something failed"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_no_strip_ansi() {
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+        let log_dir_str = log_dir.to_string_lossy().to_string();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+        let ansi_payload = b"\x1b[31mERROR\x1b[0m: something failed\n";
+        tx.send(Frame {
+            timestamp_ns: 1_000_000,
+            stream_type: StreamType::Stdout,
+            payload: ansi_payload.to_vec(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        writer.run().await.unwrap();
+
+        let params = WaitForPatternParams {
+            id: String::new(),
+            pattern: "^ERROR".to_string(),
+            stream: None,
+            timeout: Some(1),
+            poll_interval_ms: Some(200),
+            strip_ansi: Some(false),
+        };
+        let resp = wait_for_pattern(&log_dir_str, params).await.unwrap();
+        assert!(!resp.matched);
+        assert!(resp.timed_out);
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_resolves_by_run_id() {
+        let (db, _, run_id, _dir) = setup_test_env().await;
+        let params = WaitForPatternParams {
+            id: run_id,
+            pattern: "retrying".to_string(),
+            stream: None,
+            timeout: Some(2),
+            poll_interval_ms: Some(100),
+            strip_ansi: None,
+        };
+        let resp = test_wait_for_pattern(&db, params).await.unwrap();
+        assert!(resp.matched);
+        assert!(resp.line.unwrap().contains("retrying"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_invalid_regex() {
+        let dir = TempDir::new().unwrap();
+        let log_dir_str = dir.path().to_string_lossy().to_string();
+        let params = WaitForPatternParams {
+            id: String::new(),
+            pattern: "[invalid".to_string(),
+            stream: None,
+            timeout: Some(1),
+            poll_interval_ms: Some(100),
+            strip_ansi: None,
+        };
+        let result = wait_for_pattern(&log_dir_str, params).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn wait_for_pattern_unknown_id_fails() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let params = WaitForPatternParams {
+            id: "nonexistent-service".to_string(),
+            pattern: "test".to_string(),
+            stream: None,
+            timeout: Some(1),
+            poll_interval_ms: Some(100),
+            strip_ansi: None,
+        };
+        let result = wait_for_pattern_resolve(&db, &params);
+        assert!(result.is_err());
     }
 }

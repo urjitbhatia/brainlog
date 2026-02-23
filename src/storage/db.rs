@@ -454,7 +454,7 @@ impl Database {
         let cutoff_str = cutoff.to_rfc3339();
 
         let sql = "
-            SELECT s.id, s.name, s.executable
+            SELECT s.id, s.name, s.executable, s.command_line
             FROM services s
             WHERE (
                 -- Services where the most recent run ended before cutoff
@@ -478,10 +478,12 @@ impl Database {
         let mut stmt = self.conn.prepare(sql)?;
         let candidates: Vec<PurgeCandidate> = stmt
             .query_map(params![cutoff_str], |row| {
+                let command_line_json: String = row.get(3)?;
                 Ok(PurgeCandidate {
                     service_id: row.get(0)?,
                     name: row.get(1)?,
                     executable: row.get(2)?,
+                    command_line: serde_json::from_str(&command_line_json).unwrap_or_default(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -541,6 +543,7 @@ pub struct PurgeCandidate {
     pub service_id: String,
     pub name: Option<String>,
     pub executable: String,
+    pub command_line: Vec<String>,
 }
 
 /// A service that matched a metadata search, along with what fields matched.

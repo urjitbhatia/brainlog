@@ -68,15 +68,16 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
     );
     println!();
     for candidate in &candidates {
-        let display_name = candidate
-            .name
-            .as_deref()
-            .unwrap_or(&candidate.service_id[..8.min(candidate.service_id.len())]);
-        println!(
-            "  {} ({})",
-            display_name,
-            &candidate.service_id[..8.min(candidate.service_id.len())]
-        );
+        let id_short = &candidate.service_id[..8.min(candidate.service_id.len())];
+        let display_name = candidate.name.as_deref().unwrap_or(id_short);
+        let cmd = candidate.command_line.join(" ");
+        let max_cmd_len = 80;
+        let cmd_display = if cmd.len() > max_cmd_len {
+            format!("{}...", &cmd[..max_cmd_len])
+        } else {
+            cmd
+        };
+        println!("  {} ({})  $ {}", display_name, id_short, cmd_display);
     }
     println!();
 

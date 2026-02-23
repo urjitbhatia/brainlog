@@ -22,7 +22,9 @@ pub async fn forward_signals(child_pid: u32) -> Result<()> {
             SIGCONT => Signal::SIGCONT,
             _ => continue,
         };
-        let _ = signal::kill(pid, nix_signal);
+        if let Err(e) = signal::kill(pid, nix_signal) {
+            tracing::warn!("Failed to forward signal {nix_signal} to child pid {child_pid}: {e}");
+        }
     }
 
     Ok(())

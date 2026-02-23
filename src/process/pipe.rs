@@ -56,8 +56,12 @@ pub async fn spawn_piped(command: &[String], tx: mpsc::Sender<Frame>) -> Result<
     signal_handle.abort();
 
     // Wait for I/O to drain
-    let _ = stdout_handle.await;
-    let _ = stderr_handle.await;
+    if let Err(e) = stdout_handle.await {
+        tracing::warn!("Stdout capture task failed: {e}");
+    }
+    if let Err(e) = stderr_handle.await {
+        tracing::warn!("Stderr capture task failed: {e}");
+    }
 
     drop(tx);
 

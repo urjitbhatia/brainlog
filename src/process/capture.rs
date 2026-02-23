@@ -30,13 +30,16 @@ where
         }
         let payload = buf[..n].to_vec();
         tokio::io::AsyncWriteExt::write_all(&mut writer, &payload).await?;
-        let _ = tx
+        if let Err(e) = tx
             .send(Frame {
                 timestamp_ns: now_ns(),
                 stream_type,
                 payload,
             })
-            .await;
+            .await
+        {
+            tracing::warn!("Failed to send {stream_type:?} frame to log channel: {e}");
+        }
     }
     Ok(())
 }
@@ -57,13 +60,16 @@ where
             break;
         }
         let payload = buf[..n].to_vec();
-        let _ = tx
+        if let Err(e) = tx
             .send(Frame {
                 timestamp_ns: now_ns(),
                 stream_type,
                 payload,
             })
-            .await;
+            .await
+        {
+            tracing::warn!("Failed to send {stream_type:?} frame to log channel: {e}");
+        }
     }
     Ok(())
 }

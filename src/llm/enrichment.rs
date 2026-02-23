@@ -20,12 +20,11 @@ pub async fn enrich_service(
         None => {
             // No LLM configured, mark as skipped
             if let Ok(db) = Database::open(&config.db_path()) {
-                let _ = db.update_service_enrichment(
-                    service_id,
-                    None,
-                    None,
-                    &EnrichmentStatus::Skipped,
-                );
+                if let Err(e) =
+                    db.update_service_enrichment(service_id, None, None, &EnrichmentStatus::Skipped)
+                {
+                    warn!("Failed to mark enrichment as skipped for service {service_id}: {e}");
+                }
             }
             return;
         }
@@ -89,20 +88,26 @@ pub async fn enrich_service(
             let effective_name = if has_user_name { None } else { name.as_deref() };
 
             if let Ok(db) = Database::open(&config.db_path()) {
-                let _ = db.update_service_enrichment(
+                if let Err(e) = db.update_service_enrichment(
                     service_id,
                     effective_name,
                     description.as_deref(),
                     &EnrichmentStatus::Completed,
-                );
-                info!("Enriched service {}: name={:?}", service_id, name);
+                ) {
+                    warn!("Failed to store enrichment result for service {service_id}: {e}");
+                } else {
+                    info!("Enriched service {}: name={:?}", service_id, name);
+                }
             }
         }
         Err(e) => {
             warn!("LLM enrichment failed: {}", e);
             if let Ok(db) = Database::open(&config.db_path()) {
-                let _ =
-                    db.update_service_enrichment(service_id, None, None, &EnrichmentStatus::Failed);
+                if let Err(e) =
+                    db.update_service_enrichment(service_id, None, None, &EnrichmentStatus::Failed)
+                {
+                    warn!("Failed to mark enrichment as failed for service {service_id}: {e}");
+                }
             }
         }
     }

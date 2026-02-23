@@ -91,6 +91,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         let command_enrich = args.command.clone();
         let tags_enrich = args.tag.clone();
         let desc_enrich = args.desc.clone();
+        let has_user_name = args.name.is_some();
         tokio::spawn(async move {
             llm::enrichment::enrich_service(
                 &config_enrich,
@@ -99,6 +100,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
                 &working_dir_enrich,
                 &tags_enrich,
                 desc_enrich.as_deref(),
+                has_user_name,
             )
             .await;
         });

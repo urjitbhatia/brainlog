@@ -1,6 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::storage::models::{LogMode, StreamFilter};
+
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiscoverServicesParams {
     /// Filter by service name (substring match)
@@ -58,9 +60,9 @@ pub struct GetLogsParams {
     /// Service ID or run ID
     pub id: String,
     /// Stream to read: stdout, stderr, stdin, combined (default: combined)
-    pub stream: Option<String>,
+    pub stream: Option<StreamFilter>,
     /// Read mode: head, tail, range (default: tail)
-    pub mode: Option<String>,
+    pub mode: Option<LogMode>,
     /// Number of lines for head/tail mode (default: 100)
     pub lines: Option<usize>,
     /// Start time (ns since epoch) for range mode
@@ -86,7 +88,7 @@ pub struct SearchLogsParams {
     /// Filter by service ID
     pub service_id: Option<String>,
     /// Stream to search: stdout, stderr, stdin, combined (default: combined)
-    pub stream: Option<String>,
+    pub stream: Option<StreamFilter>,
     /// Start time filter (ns since epoch)
     pub start_time: Option<u64>,
     /// End time filter (ns since epoch)

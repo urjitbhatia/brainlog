@@ -138,12 +138,15 @@ pub struct Frame {
 }
 
 /// Filter for which log stream to read or search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum StreamFilter {
     Stdout,
     Stderr,
     Stdin,
+    #[default]
     Combined,
 }
 
@@ -169,12 +172,6 @@ impl StreamFilter {
     }
 }
 
-impl Default for StreamFilter {
-    fn default() -> Self {
-        Self::Combined
-    }
-}
-
 impl fmt::Display for StreamFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -182,10 +179,13 @@ impl fmt::Display for StreamFilter {
 }
 
 /// Mode for reading logs: head, tail, or time-range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum LogMode {
     Head,
+    #[default]
     Tail,
     Range,
 }
@@ -197,12 +197,6 @@ impl LogMode {
             Self::Tail => "tail",
             Self::Range => "range",
         }
-    }
-}
-
-impl Default for LogMode {
-    fn default() -> Self {
-        Self::Tail
     }
 }
 

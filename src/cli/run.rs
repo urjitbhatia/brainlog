@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::cli::RunArgs;
@@ -71,17 +72,32 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
     // Start background tasks
     let db_path = config.db_path();
-    let run_id_port = run_id.clone();
-    let pid_for_port = spawn_result.pid;
 
-    // Port detection (fire-and-forget for the duration of the process)
-    if config.port_detection.enabled && spawn_result.pid > 0 {
+    // Port detection — create token so we can cancel the polling loop.
+    // NOTE: currently spawn_wrapped blocks until the child exits, so the
+    // child is already dead by this point. The cancellation token still
+    // ensures the spawned task terminates promptly rather than looping
+    // forever on a stale PID.
+    let port_cancel = CancellationToken::new();
+    let port_handle = if config.port_detection.enabled && spawn_result.pid > 0 {
+        let run_id_port = run_id.clone();
+        let pid_for_port = spawn_result.pid;
         let poll_interval = config.port_detection.poll_interval_secs;
         let db_path_port = db_path.clone();
-        tokio::spawn(async move {
-            platform::poll_ports(pid_for_port, &run_id_port, &db_path_port, poll_interval).await;
-        });
-    }
+        let cancel = port_cancel.clone();
+        Some(tokio::spawn(async move {
+            platform::poll_ports(
+                pid_for_port,
+                &run_id_port,
+                &db_path_port,
+                poll_interval,
+                cancel,
+            )
+            .await;
+        }))
+    } else {
+        None
+    };
 
     // LLM enrichment (fire-and-forget)
     if config.enrichment.enabled {
@@ -108,6 +124,12 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
     // Wait for log writer to finish
     let _ = log_handle.await;
+
+    // Stop port polling now that the child has exited
+    port_cancel.cancel();
+    if let Some(handle) = port_handle {
+        let _ = handle.await;
+    }
 
     // Update run status
     let exit_code = spawn_result.exit_code.unwrap_or(1);

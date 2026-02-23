@@ -216,7 +216,7 @@ impl Database {
     pub fn list_services(&self) -> Result<Vec<Service>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, description, executable, command_line, working_dir, created_at, updated_at, enrichment_status
-             FROM services ORDER BY updated_at DESC",
+             FROM services ORDER BY created_at DESC",
         )?;
         let services = stmt
             .query_map([], row_to_service_rusqlite)?
@@ -301,7 +301,7 @@ impl Database {
             sql.push_str(" WHERE ");
             sql.push_str(&conditions.join(" AND "));
         }
-        sql.push_str(" ORDER BY s.updated_at DESC");
+        sql.push_str(" ORDER BY s.created_at DESC");
         let idx = param_values.len() + 1;
         sql.push_str(&format!(" LIMIT ?{}", idx));
         param_values.push(Box::new(limit as i64));
@@ -751,6 +751,58 @@ mod tests {
         // This is the behavior that the enrichment layer must prevent
         // by passing None when has_user_name is true.
         assert_eq!(svc.name.as_deref(), Some("Node Express Server"));
+    }
+
+    #[test]
+    fn list_services_sorted_by_created_at_descending() {
+        let db = Database::open_in_memory().unwrap();
+
+        let mut older = make_service("svc-old", Some("older-svc"));
+        older.created_at = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&older).unwrap();
+
+        let mut newer = make_service("svc-new", Some("newer-svc"));
+        newer.created_at = chrono::DateTime::parse_from_rfc3339("2024-06-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&newer).unwrap();
+
+        let list = db.list_services().unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "svc-new", "newest created_at should come first");
+        assert_eq!(list[1].id, "svc-old", "oldest created_at should come last");
+    }
+
+    #[test]
+    fn search_services_sorted_by_created_at_descending() {
+        let db = Database::open_in_memory().unwrap();
+
+        let mut older = make_service("svc-search-old", Some("web-old"));
+        older.created_at = chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&older).unwrap();
+
+        let mut newer = make_service("svc-search-new", Some("web-new"));
+        newer.created_at = chrono::DateTime::parse_from_rfc3339("2024-06-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&newer).unwrap();
+
+        let results = db
+            .search_services(Some("web"), None, &[], None, None, 100)
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0].id, "svc-search-new",
+            "newest created_at should come first in search"
+        );
+        assert_eq!(
+            results[1].id, "svc-search-old",
+            "oldest created_at should come last in search"
+        );
     }
 
     #[test]

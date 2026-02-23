@@ -199,6 +199,10 @@ fn list_shows_header_and_service() {
         "list should have STATUS header"
     );
     assert!(
+        list.stdout.contains("CREATED"),
+        "list should have CREATED header"
+    );
+    assert!(
         list.stdout.contains("COMMAND"),
         "list should have COMMAND header"
     );

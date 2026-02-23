@@ -32,7 +32,10 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     }
 
     if !args.verbose {
-        println!("{:<8}  {:<20}  {:<12}  COMMAND", "ID", "NAME", "STATUS");
+        println!(
+            "{:<8}  {:<20}  {:<12}  {:<20}  COMMAND",
+            "ID", "NAME", "STATUS", "CREATED"
+        );
     }
 
     for service in &services {
@@ -81,11 +84,13 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             } else {
                 "no runs".to_string()
             };
+            let created = service.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
             println!(
-                "{:<8}  {:<20}  {:<12}  {}",
+                "{:<8}  {:<20}  {:<12}  {:<20}  {}",
                 &service.id[..8],
                 name_display,
                 status,
+                created,
                 service.command_line.join(" ")
             );
         }

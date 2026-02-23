@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -144,14 +145,46 @@ impl LogReader {
     }
 
     pub fn read_head(&self, n: usize) -> Result<Vec<Frame>> {
-        let frames = self.read_frames()?;
-        Ok(frames.into_iter().take(n).collect())
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut file = std::fs::File::open(&self.path)?;
+        let mut frames = Vec::with_capacity(n);
+        for _ in 0..n {
+            match read_one_frame(&mut file) {
+                Ok(Some(frame)) => frames.push(frame),
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("Error reading frame: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(frames)
     }
 
     pub fn read_tail(&self, n: usize) -> Result<Vec<Frame>> {
-        let frames = self.read_frames()?;
-        let skip = frames.len().saturating_sub(n);
-        Ok(frames.into_iter().skip(skip).collect())
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut file = std::fs::File::open(&self.path)?;
+        let mut ring = VecDeque::with_capacity(n + 1);
+        loop {
+            match read_one_frame(&mut file) {
+                Ok(Some(frame)) => {
+                    ring.push_back(frame);
+                    if ring.len() > n {
+                        ring.pop_front();
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("Error reading frame: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(ring.into())
     }
 
     pub fn read_range(&self, start_time: Option<u64>, end_time: Option<u64>) -> Result<Vec<Frame>> {
@@ -616,5 +649,225 @@ mod tests {
         assert_eq!(batch2[1].payload, b"msg3\n");
         assert_eq!(batch2[2].payload, b"msg4\n");
         assert_eq!(offset2, offset1);
+    }
+
+    /// Helper: write frames directly to a file for unit tests that don't need LogWriter.
+    fn write_frames_to_file(path: &Path, frames: &[Frame]) {
+        let mut file = std::fs::File::create(path).unwrap();
+        for frame in frames {
+            file.write_all(&encode_frame(frame)).unwrap();
+        }
+        file.flush().unwrap();
+    }
+
+    #[test]
+    fn read_head_stops_early() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames: Vec<Frame> = (0..100)
+            .map(|i| {
+                make_frame(
+                    StreamType::Stdout,
+                    format!("line{}\n", i).as_bytes(),
+                    i * 1000,
+                )
+            })
+            .collect();
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+
+        // read_head(1) should return exactly the first frame
+        let head1 = reader.read_head(1).unwrap();
+        assert_eq!(head1.len(), 1);
+        assert_eq!(head1[0].payload, b"line0\n");
+        assert_eq!(head1[0].timestamp_ns, 0);
+
+        // read_head(3) should return exactly the first 3 frames
+        let head3 = reader.read_head(3).unwrap();
+        assert_eq!(head3.len(), 3);
+        for i in 0..3 {
+            assert_eq!(head3[i].payload, format!("line{}\n", i).as_bytes());
+            assert_eq!(head3[i].timestamp_ns, i as u64 * 1000);
+        }
+    }
+
+    #[test]
+    fn read_head_with_n_greater_than_total_frames() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames: Vec<Frame> = (0..3)
+            .map(|i| make_frame(StreamType::Stdout, format!("f{}", i).as_bytes(), i * 1000))
+            .collect();
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let head = reader.read_head(100).unwrap();
+        assert_eq!(head.len(), 3);
+    }
+
+    #[test]
+    fn read_head_zero() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames = vec![make_frame(StreamType::Stdout, b"data", 1000)];
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let head = reader.read_head(0).unwrap();
+        assert_eq!(head.len(), 0);
+    }
+
+    #[test]
+    fn read_head_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        write_frames_to_file(&log_path, &[]);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let head = reader.read_head(5).unwrap();
+        assert_eq!(head.len(), 0);
+    }
+
+    #[test]
+    fn read_head_missing_file() {
+        let reader = LogReader::new(Path::new("/nonexistent"), StreamFilter::Stdout);
+        let head = reader.read_head(5).unwrap();
+        assert_eq!(head.len(), 0);
+    }
+
+    #[test]
+    fn read_tail_uses_ring_buffer() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames: Vec<Frame> = (0..100)
+            .map(|i| {
+                make_frame(
+                    StreamType::Stdout,
+                    format!("line{}\n", i).as_bytes(),
+                    i * 1000,
+                )
+            })
+            .collect();
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+
+        // read_tail(1) should return only the last frame
+        let tail1 = reader.read_tail(1).unwrap();
+        assert_eq!(tail1.len(), 1);
+        assert_eq!(tail1[0].payload, b"line99\n");
+        assert_eq!(tail1[0].timestamp_ns, 99 * 1000);
+
+        // read_tail(3) should return the last 3 frames
+        let tail3 = reader.read_tail(3).unwrap();
+        assert_eq!(tail3.len(), 3);
+        for (j, i) in (97..100).enumerate() {
+            assert_eq!(tail3[j].payload, format!("line{}\n", i).as_bytes());
+            assert_eq!(tail3[j].timestamp_ns, i as u64 * 1000);
+        }
+    }
+
+    #[test]
+    fn read_tail_with_n_greater_than_total_frames() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames: Vec<Frame> = (0..3)
+            .map(|i| make_frame(StreamType::Stdout, format!("f{}", i).as_bytes(), i * 1000))
+            .collect();
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let tail = reader.read_tail(100).unwrap();
+        assert_eq!(tail.len(), 3);
+        // Verify order is preserved
+        for i in 0..3 {
+            assert_eq!(tail[i].payload, format!("f{}", i).as_bytes());
+        }
+    }
+
+    #[test]
+    fn read_tail_zero() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames = vec![make_frame(StreamType::Stdout, b"data", 1000)];
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let tail = reader.read_tail(0).unwrap();
+        assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn read_tail_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        write_frames_to_file(&log_path, &[]);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let tail = reader.read_tail(5).unwrap();
+        assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn read_tail_missing_file() {
+        let reader = LogReader::new(Path::new("/nonexistent"), StreamFilter::Stdout);
+        let tail = reader.read_tail(5).unwrap();
+        assert_eq!(tail.len(), 0);
+    }
+
+    #[test]
+    fn read_head_and_tail_match_read_frames() {
+        let dir = TempDir::new().unwrap();
+        let log_path = dir.path().join("stdout.log");
+        let frames: Vec<Frame> = (0..20)
+            .map(|i| {
+                make_frame(
+                    StreamType::Stdout,
+                    format!("msg{}\n", i).as_bytes(),
+                    i * 500,
+                )
+            })
+            .collect();
+        write_frames_to_file(&log_path, &frames);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
+        let all_frames = reader.read_frames().unwrap();
+        assert_eq!(all_frames.len(), 20);
+
+        // read_head should match first N of read_frames
+        for n in [1, 5, 10, 20, 30] {
+            let head = reader.read_head(n).unwrap();
+            let expected: Vec<_> = all_frames.iter().take(n).collect();
+            assert_eq!(
+                head.len(),
+                expected.len(),
+                "read_head({}) length mismatch",
+                n
+            );
+            for (h, e) in head.iter().zip(expected.iter()) {
+                assert_eq!(h.payload, e.payload);
+                assert_eq!(h.timestamp_ns, e.timestamp_ns);
+                assert_eq!(h.stream_type, e.stream_type);
+            }
+        }
+
+        // read_tail should match last N of read_frames
+        for n in [1, 5, 10, 20, 30] {
+            let tail = reader.read_tail(n).unwrap();
+            let skip = all_frames.len().saturating_sub(n);
+            let expected: Vec<_> = all_frames.iter().skip(skip).collect();
+            assert_eq!(
+                tail.len(),
+                expected.len(),
+                "read_tail({}) length mismatch",
+                n
+            );
+            for (t, e) in tail.iter().zip(expected.iter()) {
+                assert_eq!(t.payload, e.payload);
+                assert_eq!(t.timestamp_ns, e.timestamp_ns);
+                assert_eq!(t.stream_type, e.stream_type);
+            }
+        }
     }
 }

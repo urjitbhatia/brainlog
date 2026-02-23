@@ -1,6 +1,7 @@
 pub mod db;
 pub mod logfile;
 pub mod models;
+pub mod permissions;
 pub mod schema;
 
 pub use db::Database;

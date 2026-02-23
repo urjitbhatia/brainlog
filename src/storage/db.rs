@@ -13,9 +13,10 @@ pub struct Database {
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            super::permissions::create_dir_restricted(parent)?;
         }
         let conn = Connection::open(path)?;
+        super::permissions::set_file_restricted(path);
         schema::initialize(&conn)?;
         Ok(Self { conn })
     }

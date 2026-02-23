@@ -30,12 +30,26 @@ impl LogWriter {
     }
 
     pub async fn run(mut self) -> Result<()> {
-        std::fs::create_dir_all(&self.log_dir)?;
+        // Restrict the parent logs/ directory as well as the per-run log directory
+        if let Some(parent) = self.log_dir.parent() {
+            super::permissions::create_dir_restricted(parent)?;
+        }
+        super::permissions::create_dir_restricted(&self.log_dir)?;
 
-        let mut stdout_file = std::fs::File::create(self.log_dir.join("stdout.log"))?;
-        let mut stderr_file = std::fs::File::create(self.log_dir.join("stderr.log"))?;
-        let mut stdin_file = std::fs::File::create(self.log_dir.join("stdin.log"))?;
-        let mut combined_file = std::fs::File::create(self.log_dir.join("combined.log"))?;
+        let stdout_path = self.log_dir.join("stdout.log");
+        let stderr_path = self.log_dir.join("stderr.log");
+        let stdin_path = self.log_dir.join("stdin.log");
+        let combined_path = self.log_dir.join("combined.log");
+
+        let mut stdout_file = std::fs::File::create(&stdout_path)?;
+        let mut stderr_file = std::fs::File::create(&stderr_path)?;
+        let mut stdin_file = std::fs::File::create(&stdin_path)?;
+        let mut combined_file = std::fs::File::create(&combined_path)?;
+
+        super::permissions::set_file_restricted(&stdout_path);
+        super::permissions::set_file_restricted(&stderr_path);
+        super::permissions::set_file_restricted(&stdin_path);
+        super::permissions::set_file_restricted(&combined_path);
 
         let mut buffer_size: usize = 0;
         let flush_interval = tokio::time::Duration::from_millis(self.flush_interval_ms);

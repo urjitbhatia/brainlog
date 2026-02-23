@@ -162,7 +162,7 @@ fn create_service(
     let name = args
         .name
         .clone()
-        .or_else(|| Some(derive_name(&args.command)));
+        .or_else(|| Some(derive_name(working_dir, &args.command)));
     let service = Service {
         id: service_id.clone(),
         name,
@@ -182,39 +182,91 @@ fn create_service(
     Ok(service_id)
 }
 
-/// Derive a short human-readable name from the command line.
+/// Noise subcommands that are filtered out of derived names.
+/// These are common "do nothing" verbs used by package managers and task runners.
+const NOISE_SUBCOMMANDS: &[&str] = &["run", "exec"];
+
+/// Derive a human-readable service name from the working directory and command.
 ///
-/// Examples:
-///   ["make", "dev"]              -> "make-dev"
-///   ["pnpm", "run", "dev:build"] -> "pnpm-dev:build"
-///   ["python3", "-m", "http.server", "9876"] -> "python3-http.server"
-///   ["node", "server.js"]        -> "node-server.js"
-fn derive_name(command: &[String]) -> String {
-    if command.is_empty() {
-        return "unknown".to_string();
-    }
-
-    // Start with the base executable name (strip path)
-    let exe = std::path::Path::new(&command[0])
+/// Format: `<cwd_basename>/<executable>-<arg1>-<arg2>-...`
+///
+/// Noise subcommands like `run` (e.g. `pnpm run dev`) are stripped so the
+/// derived name stays concise (`pnpm-dev` instead of `pnpm-run-dev`).
+/// Arguments preserve colons (e.g. `dev:with-binding`) and are joined with `-`.
+/// The working directory basename is separated from the command part by `/`.
+fn derive_name(working_dir: &str, command: &[String]) -> String {
+    let dir_basename = std::path::Path::new(working_dir)
         .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or(&command[0]);
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-    // Collect meaningful args (skip flags/options, stop at 2 meaningful args)
-    let meaningful: Vec<&str> = command[1..]
+    let filtered: Vec<&str> = command
         .iter()
-        .filter(|a| !a.starts_with('-'))
-        .filter(|a| {
-            // Skip common subcommand noise like "run", "exec", "start"
-            !matches!(a.as_str(), "run" | "exec" | "start" | "--")
+        .enumerate()
+        .filter(|(i, arg)| {
+            // Only filter noise subcommands in non-first position
+            if *i == 0 {
+                return true;
+            }
+            !NOISE_SUBCOMMANDS.contains(&arg.as_str())
         })
-        .map(|s| s.as_str())
-        .take(2)
+        .map(|(_, arg)| arg.as_str())
         .collect();
 
-    if meaningful.is_empty() {
-        exe.to_string()
+    let cmd_part = filtered.join("-");
+
+    if dir_basename.is_empty() {
+        cmd_part
     } else {
-        format!("{}-{}", exe, meaningful.join("-"))
+        format!("{dir_basename}/{cmd_part}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_name_pnpm_dev_with_binding() {
+        let name = derive_name(
+            "/Users/urjit/code/pimlico/web",
+            &[
+                "pnpm".to_string(),
+                "run".to_string(),
+                "dev:with-binding".to_string(),
+            ],
+        );
+        assert_eq!(name, "web/pnpm-dev:with-binding");
+    }
+
+    #[test]
+    fn test_derive_name_make_dev() {
+        let name = derive_name(
+            "/Users/urjit/code/pimlico/api",
+            &["make".to_string(), "dev".to_string()],
+        );
+        assert_eq!(name, "api/make-dev");
+    }
+
+    #[test]
+    fn test_derive_name_cargo_test() {
+        let name = derive_name(
+            "/home/user/project",
+            &["cargo".to_string(), "test".to_string()],
+        );
+        assert_eq!(name, "project/cargo-test");
+    }
+
+    #[test]
+    fn test_derive_name_single_command() {
+        let name = derive_name("/home/user/myapp", &["node".to_string()]);
+        assert_eq!(name, "myapp/node");
+    }
+
+    #[test]
+    fn test_derive_name_root_dir() {
+        let name = derive_name("/", &["ls".to_string()]);
+        // Root has no basename, so just the command part
+        assert_eq!(name, "ls");
     }
 }

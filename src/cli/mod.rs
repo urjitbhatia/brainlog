@@ -4,6 +4,7 @@ pub mod mcp;
 pub mod run;
 pub mod search;
 
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 use crate::storage::models::StreamFilter;
@@ -50,6 +51,40 @@ pub struct RunArgs {
     /// Command and arguments to run
     #[arg(trailing_var_arg = true, required = true)]
     pub command: Vec<String>,
+}
+
+/// Parse a single tag string into (key, value), validating the format.
+///
+/// Tags must be in `key:value` format. The key must be non-empty.
+/// If the string contains multiple colons, the split happens at the first colon
+/// (e.g., `a:b:c` becomes key=`a`, value=`b:c`).
+pub fn parse_tag(tag: &str) -> Result<(&str, &str)> {
+    match tag.split_once(':') {
+        None => {
+            bail!(
+                "invalid tag format '{}': expected key:value (missing ':' separator)",
+                tag
+            );
+        }
+        Some((key, value)) => {
+            let key = key.trim();
+            if key.is_empty() {
+                bail!(
+                    "invalid tag format '{}': key must not be empty (expected key:value)",
+                    tag
+                );
+            }
+            Ok((key, value.trim()))
+        }
+    }
+}
+
+/// Validate all tags in a RunArgs, returning an error on the first invalid tag.
+pub fn validate_tags(tags: &[String]) -> Result<()> {
+    for tag in tags {
+        parse_tag(tag)?;
+    }
+    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -268,5 +303,101 @@ mod tests {
         let run_args = result.unwrap();
         assert_eq!(run_args.tag, vec!["env:prod", "team:backend"]);
         assert_eq!(run_args.command, vec!["echo", "hi"]);
+    }
+
+    // --- Tag validation tests ---
+
+    #[test]
+    fn parse_tag_valid() {
+        let (key, value) = parse_tag("env:production").unwrap();
+        assert_eq!(key, "env");
+        assert_eq!(value, "production");
+    }
+
+    #[test]
+    fn parse_tag_valid_with_whitespace() {
+        let (key, value) = parse_tag("  env : production ").unwrap();
+        assert_eq!(key, "env");
+        assert_eq!(value, "production");
+    }
+
+    #[test]
+    fn parse_tag_missing_colon_is_error() {
+        let err = parse_tag("invalid").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing ':' separator"),
+            "Expected error about missing separator, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("key:value"),
+            "Expected error to mention expected format, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_tag_multiple_colons_splits_on_first() {
+        let (key, value) = parse_tag("url:http://example.com:8080").unwrap();
+        assert_eq!(key, "url");
+        assert_eq!(value, "http://example.com:8080");
+    }
+
+    #[test]
+    fn parse_tag_empty_key_is_error() {
+        let err = parse_tag(":value").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("key must not be empty"),
+            "Expected error about empty key, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_tag_whitespace_only_key_is_error() {
+        let err = parse_tag("  :value").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("key must not be empty"),
+            "Expected error about empty key, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn parse_tag_empty_value_is_ok() {
+        // A tag like "flag:" with an empty value is allowed
+        let (key, value) = parse_tag("flag:").unwrap();
+        assert_eq!(key, "flag");
+        assert_eq!(value, "");
+    }
+
+    #[test]
+    fn validate_tags_all_valid() {
+        let tags = vec!["env:prod".to_string(), "team:backend".to_string()];
+        assert!(validate_tags(&tags).is_ok());
+    }
+
+    #[test]
+    fn validate_tags_empty_list() {
+        let tags: Vec<String> = vec![];
+        assert!(validate_tags(&tags).is_ok());
+    }
+
+    #[test]
+    fn validate_tags_first_invalid_stops() {
+        let tags = vec![
+            "good:tag".to_string(),
+            "bad_tag".to_string(),
+            "also:good".to_string(),
+        ];
+        let err = validate_tags(&tags).unwrap_err();
+        assert!(
+            err.to_string().contains("bad_tag"),
+            "Expected error to mention the invalid tag, got: {}",
+            err
+        );
     }
 }

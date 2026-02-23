@@ -3,7 +3,7 @@ use chrono::Utc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::cli::RunArgs;
+use crate::cli::{parse_tag, validate_tags, RunArgs};
 use crate::config::Config;
 use crate::llm;
 use crate::platform;
@@ -29,11 +29,11 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         create_service(&db, &config, &args, &executable, &working_dir)?
     };
 
-    // Store tags
+    // Validate and store tags
+    validate_tags(&args.tag)?;
     for tag_str in &args.tag {
-        if let Some((key, value)) = tag_str.split_once(':') {
-            db.add_tag(&service_id, key.trim(), value.trim())?;
-        }
+        let (key, value) = parse_tag(tag_str)?;
+        db.add_tag(&service_id, key, value)?;
     }
 
     // Create run

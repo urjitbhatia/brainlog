@@ -16,7 +16,9 @@ ENV PATH="/home/agent/.cargo/bin:${PATH}"
 
 # Install cargo tools
 RUN cargo install cargo-binstall
-RUN cargo binstall cargo-nextest --no-confirm
+RUN cargo binstall cargo-nextest sccache --no-confirm
+
+ENV RUSTC_WRAPPER=sccache
 
 # Warm the persistent env so cargo is available in every shell
 RUN echo '. "$HOME/.cargo/env"' >> /etc/sandbox-persistent.sh \

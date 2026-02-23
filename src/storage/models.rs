@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
@@ -135,6 +137,81 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
+/// Filter for which log stream to read or search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamFilter {
+    Stdout,
+    Stderr,
+    Stdin,
+    Combined,
+}
+
+impl StreamFilter {
+    /// Returns the string representation used in output and filenames.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Stdin => "stdin",
+            Self::Combined => "combined",
+        }
+    }
+
+    /// Returns the log filename for this stream filter.
+    pub fn log_filename(&self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout.log",
+            Self::Stderr => "stderr.log",
+            Self::Stdin => "stdin.log",
+            Self::Combined => "combined.log",
+        }
+    }
+}
+
+impl Default for StreamFilter {
+    fn default() -> Self {
+        Self::Combined
+    }
+}
+
+impl fmt::Display for StreamFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Mode for reading logs: head, tail, or time-range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LogMode {
+    Head,
+    Tail,
+    Range,
+}
+
+impl LogMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Head => "head",
+            Self::Tail => "tail",
+            Self::Range => "range",
+        }
+    }
+}
+
+impl Default for LogMode {
+    fn default() -> Self {
+        Self::Tail
+    }
+}
+
+impl fmt::Display for LogMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +275,72 @@ mod tests {
         assert!(StreamType::from_u8(0x00).is_none());
         assert!(StreamType::from_u8(0x04).is_none());
         assert!(StreamType::from_u8(0xFF).is_none());
+    }
+
+    #[test]
+    fn stream_filter_as_str_roundtrip() {
+        for (filter, expected_str, expected_filename) in [
+            (StreamFilter::Stdout, "stdout", "stdout.log"),
+            (StreamFilter::Stderr, "stderr", "stderr.log"),
+            (StreamFilter::Stdin, "stdin", "stdin.log"),
+            (StreamFilter::Combined, "combined", "combined.log"),
+        ] {
+            assert_eq!(filter.as_str(), expected_str);
+            assert_eq!(filter.log_filename(), expected_filename);
+            assert_eq!(filter.to_string(), expected_str);
+        }
+    }
+
+    #[test]
+    fn stream_filter_default_is_combined() {
+        assert_eq!(StreamFilter::default(), StreamFilter::Combined);
+    }
+
+    #[test]
+    fn stream_filter_serde_roundtrip() {
+        for filter in [
+            StreamFilter::Stdout,
+            StreamFilter::Stderr,
+            StreamFilter::Stdin,
+            StreamFilter::Combined,
+        ] {
+            let json = serde_json::to_string(&filter).unwrap();
+            let deserialized: StreamFilter = serde_json::from_str(&json).unwrap();
+            assert_eq!(filter, deserialized);
+        }
+    }
+
+    #[test]
+    fn stream_filter_deserialize_from_string() {
+        let filter: StreamFilter = serde_json::from_str("\"stdout\"").unwrap();
+        assert_eq!(filter, StreamFilter::Stdout);
+        let filter: StreamFilter = serde_json::from_str("\"combined\"").unwrap();
+        assert_eq!(filter, StreamFilter::Combined);
+    }
+
+    #[test]
+    fn log_mode_as_str_roundtrip() {
+        for (mode, expected_str) in [
+            (LogMode::Head, "head"),
+            (LogMode::Tail, "tail"),
+            (LogMode::Range, "range"),
+        ] {
+            assert_eq!(mode.as_str(), expected_str);
+            assert_eq!(mode.to_string(), expected_str);
+        }
+    }
+
+    #[test]
+    fn log_mode_default_is_tail() {
+        assert_eq!(LogMode::default(), LogMode::Tail);
+    }
+
+    #[test]
+    fn log_mode_serde_roundtrip() {
+        for mode in [LogMode::Head, LogMode::Tail, LogMode::Range] {
+            let json = serde_json::to_string(&mode).unwrap();
+            let deserialized: LogMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(mode, deserialized);
+        }
     }
 }

@@ -19,6 +19,7 @@ RUN cargo install cargo-binstall
 RUN cargo binstall cargo-nextest sccache --no-confirm
 
 ENV RUSTC_WRAPPER=sccache
+ENV SCCACHE_DIR=.sccache
 
 # Warm the persistent env so cargo is available in every shell
 RUN echo '. "$HOME/.cargo/env"' >> /etc/sandbox-persistent.sh \

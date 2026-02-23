@@ -65,24 +65,22 @@ fn resolve_log_dir(db: &Database, id: &str) -> Result<String> {
 }
 
 async fn follow_logs(reader: &LogReader) -> Result<()> {
-    let mut last_size = reader.file_size()?;
-
     // Show last 10 frames first
     let frames = reader.read_tail(10)?;
-    let mut shown_frames = reader.read_frames()?.len();
     print!("{}", frames_to_text(&frames));
+
+    // Start incremental reads from end of file
+    let mut offset = reader.file_size()?;
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         let current_size = reader.file_size()?;
-        if current_size > last_size {
-            let all_frames = reader.read_frames()?;
-            if all_frames.len() > shown_frames {
-                let new_frames = &all_frames[shown_frames..];
-                print!("{}", frames_to_text(new_frames));
-                shown_frames = all_frames.len();
+        if current_size > offset {
+            let (new_frames, new_offset) = reader.read_frames_from_offset(offset)?;
+            if !new_frames.is_empty() {
+                print!("{}", frames_to_text(&new_frames));
             }
-            last_size = current_size;
+            offset = new_offset;
         }
     }
 }

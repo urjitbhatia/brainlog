@@ -1,12 +1,22 @@
 use anyhow::Result;
 use regex::Regex;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use crate::storage::logfile::{frames_to_text, LogReader};
 use crate::storage::models::LogMode;
 use crate::storage::Database;
 
 use super::types::*;
+
+/// Regex that matches common ANSI escape sequences (CSI sequences and OSC sequences).
+static ANSI_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap());
+
+/// Strip ANSI escape codes from the given string.
+fn strip_ansi_codes(s: &str) -> String {
+    ANSI_RE.replace_all(s, "").into_owned()
+}
 
 pub fn discover_services(
     db: &Database,
@@ -81,6 +91,7 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
     let mode = params.mode.unwrap_or_default();
     let lines = params.lines.unwrap_or(100);
     let max_bytes = params.max_bytes.unwrap_or(51200);
+    let strip_ansi = params.strip_ansi.unwrap_or(true);
 
     // Resolve ID to log dir
     let log_dir = resolve_log_dir(db, &params.id)?;
@@ -94,6 +105,11 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
 
     let frame_count = frames.len();
     let text = frames_to_text(&frames);
+    let text = if strip_ansi {
+        strip_ansi_codes(&text)
+    } else {
+        text
+    };
     let has_more = text.len() > max_bytes;
     let content = if has_more {
         text[..max_bytes].to_string()
@@ -113,6 +129,7 @@ pub fn search_logs(db: &Database, params: SearchLogsParams) -> Result<SearchLogs
     let pattern = Regex::new(&params.pattern)?;
     let stream = params.stream.unwrap_or_default();
     let max_matches = params.max_matches.unwrap_or(50);
+    let strip_ansi = params.strip_ansi.unwrap_or(true);
 
     let services = if let Some(ref sid) = params.service_id {
         if let Some(s) = db.get_service(sid)? {
@@ -147,13 +164,18 @@ pub fn search_logs(db: &Database, params: SearchLogsParams) -> Result<SearchLogs
                         continue;
                     }
                 }
+                let line = if strip_ansi {
+                    strip_ansi_codes(&m.line)
+                } else {
+                    m.line
+                };
                 all_matches.push(SearchMatch {
                     service_id: service.id.clone(),
                     service_name: service.name.clone(),
                     run_id: run.id.clone(),
                     stream: m.stream_type.as_str().to_string(),
                     timestamp_ns: m.timestamp_ns,
-                    line: m.line,
+                    line,
                 });
             }
         }
@@ -353,6 +375,7 @@ mod tests {
             start_time: None,
             end_time: None,
             max_bytes: None,
+            strip_ansi: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.stream, "combined");
@@ -373,6 +396,7 @@ mod tests {
             start_time: None,
             end_time: None,
             max_bytes: None,
+            strip_ansi: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.stream, "stdout");
@@ -393,6 +417,7 @@ mod tests {
             start_time: None,
             end_time: None,
             max_bytes: None,
+            strip_ansi: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.frame_count, 1);
@@ -410,6 +435,7 @@ mod tests {
             start_time: None,
             end_time: None,
             max_bytes: Some(20),
+            strip_ansi: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert!(resp.has_more, "should indicate truncation");
@@ -427,6 +453,7 @@ mod tests {
             start_time: None,
             end_time: None,
             max_bytes: None,
+            strip_ansi: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.stream, "stderr");
@@ -447,6 +474,7 @@ mod tests {
             end_time: None,
             context_lines: None,
             max_matches: None,
+            strip_ansi: None,
         };
         let resp = search_logs(&db, params).unwrap();
         assert_eq!(resp.total_matches, 1);
@@ -464,6 +492,7 @@ mod tests {
             end_time: None,
             context_lines: None,
             max_matches: None,
+            strip_ansi: None,
         };
         let resp = search_logs(&db, params).unwrap();
         assert_eq!(resp.total_matches, 2);
@@ -480,6 +509,7 @@ mod tests {
             end_time: None,
             context_lines: None,
             max_matches: None,
+            strip_ansi: None,
         };
         let resp = search_logs(&db, params).unwrap();
         assert_eq!(resp.total_matches, 0);
@@ -496,6 +526,7 @@ mod tests {
             end_time: None,
             context_lines: None,
             max_matches: Some(2),
+            strip_ansi: None,
         };
         let resp = search_logs(&db, params).unwrap();
         assert_eq!(resp.total_matches, 2);
@@ -512,6 +543,7 @@ mod tests {
             end_time: None,
             context_lines: None,
             max_matches: None,
+            strip_ansi: None,
         };
         let resp = search_logs(&db, params).unwrap();
         assert_eq!(resp.total_matches, 2);
@@ -525,6 +557,7 @@ mod tests {
             end_time: None,
             context_lines: None,
             max_matches: None,
+            strip_ansi: None,
         };
         let resp = search_logs(&db, params).unwrap();
         assert_eq!(resp.total_matches, 0);
@@ -550,5 +583,228 @@ mod tests {
     async fn resolve_unknown_id_fails() {
         let (db, _, _, _dir) = setup_test_env().await;
         assert!(resolve_log_dir(&db, "no-such-thing").is_err());
+    }
+
+    // ── strip_ansi ──────────────────────────────────────────────────
+
+    #[test]
+    fn strip_ansi_codes_removes_csi_sequences() {
+        let input = "\x1b[32mINFO\x1b[0m: server started";
+        assert_eq!(strip_ansi_codes(input), "INFO: server started");
+    }
+
+    #[test]
+    fn strip_ansi_codes_removes_osc_sequences() {
+        let input = "\x1b]0;window title\x07some text";
+        assert_eq!(strip_ansi_codes(input), "some text");
+    }
+
+    #[test]
+    fn strip_ansi_codes_preserves_plain_text() {
+        let input = "plain text with no escape codes";
+        assert_eq!(strip_ansi_codes(input), input);
+    }
+
+    #[test]
+    fn strip_ansi_codes_handles_multiple_sequences() {
+        let input = "\x1b[1m\x1b[31mERROR\x1b[0m: \x1b[33mconnection\x1b[0m refused";
+        assert_eq!(strip_ansi_codes(input), "ERROR: connection refused");
+    }
+
+    /// Create a test env with ANSI escape codes in log output.
+    async fn setup_ansi_test_env() -> (Database, String, String, TempDir) {
+        let db = Database::open_in_memory().unwrap();
+        let dir = TempDir::new().unwrap();
+        let log_dir = dir.path().to_path_buf();
+
+        let svc = Service {
+            id: "svc-ansi-001".to_string(),
+            name: Some("ansi-test".to_string()),
+            description: Some("Service with ANSI logs".to_string()),
+            executable: "node".to_string(),
+            command_line: vec!["node".to_string(), "app.js".to_string()],
+            working_dir: "/tmp/project".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            enrichment_status: EnrichmentStatus::Skipped,
+        };
+        db.create_service(&svc).unwrap();
+
+        let run = Run {
+            id: "run-ansi-001".to_string(),
+            service_id: "svc-ansi-001".to_string(),
+            pid: Some(8888),
+            started_at: Utc::now(),
+            ended_at: None,
+            exit_code: Some(0),
+            log_dir: log_dir.to_string_lossy().to_string(),
+            status: RunStatus::Completed,
+        };
+        db.create_run(&run).unwrap();
+
+        let (tx, rx) = mpsc::channel(64);
+        let writer = LogWriter::new(log_dir.clone(), rx, 50, 4096);
+
+        tx.send(Frame {
+            timestamp_ns: 1_000_000_000,
+            stream_type: StreamType::Stdout,
+            payload: b"\x1b[32mINFO\x1b[0m: server started on port 3000\n".to_vec(),
+        })
+        .await
+        .unwrap();
+        tx.send(Frame {
+            timestamp_ns: 2_000_000_000,
+            stream_type: StreamType::Stderr,
+            payload: b"\x1b[1m\x1b[31mERROR\x1b[0m: connection refused\n".to_vec(),
+        })
+        .await
+        .unwrap();
+        tx.send(Frame {
+            timestamp_ns: 3_000_000_000,
+            stream_type: StreamType::Stdout,
+            payload: b"\x1b]0;my terminal title\x07plain line\n".to_vec(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+        writer.run().await.unwrap();
+
+        (
+            db,
+            "svc-ansi-001".to_string(),
+            "run-ansi-001".to_string(),
+            dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn get_logs_strip_ansi_removes_escape_codes() {
+        let (db, _, run_id, _dir) = setup_ansi_test_env().await;
+        let params = GetLogsParams {
+            id: run_id,
+            stream: None,
+            mode: None,
+            lines: None,
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: Some(true),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert!(
+            !resp.content.contains("\x1b["),
+            "content should not contain ANSI CSI sequences"
+        );
+        assert!(
+            !resp.content.contains("\x1b]"),
+            "content should not contain ANSI OSC sequences"
+        );
+        assert!(resp.content.contains("INFO: server started on port 3000"));
+        assert!(resp.content.contains("ERROR: connection refused"));
+        assert!(resp.content.contains("plain line"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_strip_ansi_false_preserves_codes() {
+        let (db, _, run_id, _dir) = setup_ansi_test_env().await;
+        let params = GetLogsParams {
+            id: run_id,
+            stream: None,
+            mode: None,
+            lines: None,
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: Some(false),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert!(
+            resp.content.contains("\x1b[32m"),
+            "content should preserve ANSI codes when strip_ansi is false"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_logs_default_strips_ansi() {
+        let (db, _, run_id, _dir) = setup_ansi_test_env().await;
+        let params = GetLogsParams {
+            id: run_id,
+            stream: None,
+            mode: None,
+            lines: None,
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: None,
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert!(
+            !resp.content.contains("\x1b["),
+            "content should strip ANSI codes by default"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_logs_strip_ansi_removes_escape_codes() {
+        let (db, _, _, _dir) = setup_ansi_test_env().await;
+        let params = SearchLogsParams {
+            pattern: "ERROR".to_string(),
+            service_id: Some("svc-ansi-001".to_string()),
+            stream: None,
+            start_time: None,
+            end_time: None,
+            context_lines: None,
+            max_matches: None,
+            strip_ansi: Some(true),
+        };
+        let resp = search_logs(&db, params).unwrap();
+        assert_eq!(resp.total_matches, 1);
+        assert!(
+            !resp.matches[0].line.contains("\x1b["),
+            "match line should not contain ANSI codes"
+        );
+        assert!(resp.matches[0].line.contains("ERROR: connection refused"));
+    }
+
+    #[tokio::test]
+    async fn search_logs_strip_ansi_false_preserves_codes() {
+        let (db, _, _, _dir) = setup_ansi_test_env().await;
+        let params = SearchLogsParams {
+            pattern: "ERROR".to_string(),
+            service_id: Some("svc-ansi-001".to_string()),
+            stream: None,
+            start_time: None,
+            end_time: None,
+            context_lines: None,
+            max_matches: None,
+            strip_ansi: Some(false),
+        };
+        let resp = search_logs(&db, params).unwrap();
+        assert_eq!(resp.total_matches, 1);
+        assert!(
+            resp.matches[0].line.contains("\x1b["),
+            "match line should contain ANSI codes when strip_ansi is false"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_logs_default_strips_ansi() {
+        let (db, _, _, _dir) = setup_ansi_test_env().await;
+        let params = SearchLogsParams {
+            pattern: "ERROR".to_string(),
+            service_id: Some("svc-ansi-001".to_string()),
+            stream: None,
+            start_time: None,
+            end_time: None,
+            context_lines: None,
+            max_matches: None,
+            strip_ansi: None,
+        };
+        let resp = search_logs(&db, params).unwrap();
+        assert_eq!(resp.total_matches, 1);
+        assert!(
+            !resp.matches[0].line.contains("\x1b["),
+            "match line should strip ANSI codes by default"
+        );
     }
 }

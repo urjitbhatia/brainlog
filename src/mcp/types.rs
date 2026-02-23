@@ -71,6 +71,8 @@ pub struct GetLogsParams {
     pub end_time: Option<u64>,
     /// Maximum bytes to return (default: 51200)
     pub max_bytes: Option<usize>,
+    /// Strip ANSI escape codes from log output. Useful for programmatic consumers. Defaults to true.
+    pub strip_ansi: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,6 +99,8 @@ pub struct SearchLogsParams {
     pub context_lines: Option<usize>,
     /// Maximum number of matches (default: 50)
     pub max_matches: Option<usize>,
+    /// Strip ANSI escape codes from log output. Useful for programmatic consumers. Defaults to true.
+    pub strip_ansi: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]

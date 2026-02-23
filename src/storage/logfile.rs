@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
-use super::models::{Frame, StreamType};
+use super::models::{Frame, StreamFilter, StreamType};
 
 const FRAME_HEADER_SIZE: usize = 13; // u64 + u8 + u32
 
@@ -104,15 +104,9 @@ pub struct LogReader {
 }
 
 impl LogReader {
-    pub fn new(log_dir: &Path, stream: &str) -> Self {
-        let filename = match stream {
-            "stdout" => "stdout.log",
-            "stderr" => "stderr.log",
-            "stdin" => "stdin.log",
-            _ => "combined.log",
-        };
+    pub fn new(log_dir: &Path, stream: StreamFilter) -> Self {
         Self {
-            path: log_dir.join(filename),
+            path: log_dir.join(stream.log_filename()),
         }
     }
 
@@ -325,19 +319,19 @@ mod tests {
         writer.run().await.unwrap();
 
         // Read stdout
-        let reader = LogReader::new(dir.path(), "stdout");
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].payload, b"out1\n");
         assert_eq!(frames[1].payload, b"out2\n");
 
         // Read stderr
-        let reader = LogReader::new(dir.path(), "stderr");
+        let reader = LogReader::new(dir.path(), StreamFilter::Stderr);
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 1);
 
         // Read combined
-        let reader = LogReader::new(dir.path(), "combined");
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 4);
     }
@@ -362,7 +356,7 @@ mod tests {
         drop(tx);
         writer.run().await.unwrap();
 
-        let reader = LogReader::new(dir.path(), "stdout");
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
 
         let head = reader.read_head(2).unwrap();
         assert_eq!(head.len(), 2);
@@ -395,7 +389,7 @@ mod tests {
         drop(tx);
         writer.run().await.unwrap();
 
-        let reader = LogReader::new(dir.path(), "stdout");
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
         let range = reader.read_range(Some(1000), Some(3000)).unwrap();
         assert_eq!(range.len(), 3); // timestamps 1000, 2000, 3000
     }
@@ -420,7 +414,7 @@ mod tests {
         drop(tx);
         writer.run().await.unwrap();
 
-        let reader = LogReader::new(dir.path(), "stdout");
+        let reader = LogReader::new(dir.path(), StreamFilter::Stdout);
         let pattern = regex::Regex::new("ERROR").unwrap();
         let matches = reader.search(&pattern, 10).unwrap();
         assert_eq!(matches.len(), 1);
@@ -459,7 +453,7 @@ mod tests {
 
     #[test]
     fn file_size_missing_file() {
-        let reader = LogReader::new(Path::new("/nonexistent"), "stdout");
+        let reader = LogReader::new(Path::new("/nonexistent"), StreamFilter::Stdout);
         assert_eq!(reader.file_size().unwrap(), 0);
     }
 

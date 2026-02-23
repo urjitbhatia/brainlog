@@ -31,7 +31,7 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
     for service in &services {
         let runs = db.list_runs(&service.id)?;
         for run in &runs {
-            let reader = LogReader::new(Path::new(&run.log_dir), &args.stream);
+            let reader = LogReader::new(Path::new(&run.log_dir), args.stream);
             let remaining = args.max_matches.saturating_sub(total_matches);
             if remaining == 0 {
                 break;

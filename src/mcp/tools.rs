@@ -3,6 +3,7 @@ use regex::Regex;
 use std::path::Path;
 
 use crate::storage::logfile::{frames_to_text, LogReader};
+use crate::storage::models::LogMode;
 use crate::storage::Database;
 
 use super::types::*;
@@ -76,8 +77,8 @@ pub fn discover_services(
 }
 
 pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse> {
-    let stream = params.stream.as_deref().unwrap_or("combined");
-    let mode = params.mode.as_deref().unwrap_or("tail");
+    let stream = params.stream.unwrap_or_default();
+    let mode = params.mode.unwrap_or_default();
     let lines = params.lines.unwrap_or(100);
     let max_bytes = params.max_bytes.unwrap_or(51200);
 
@@ -86,9 +87,9 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
     let reader = LogReader::new(Path::new(&log_dir), stream);
 
     let frames = match mode {
-        "head" => reader.read_head(lines)?,
-        "range" => reader.read_range(params.start_time, params.end_time)?,
-        _ => reader.read_tail(lines)?,
+        LogMode::Head => reader.read_head(lines)?,
+        LogMode::Range => reader.read_range(params.start_time, params.end_time)?,
+        LogMode::Tail => reader.read_tail(lines)?,
     };
 
     let frame_count = frames.len();
@@ -104,13 +105,13 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
         content,
         frame_count,
         has_more,
-        stream: stream.to_string(),
+        stream: stream.as_str().to_string(),
     })
 }
 
 pub fn search_logs(db: &Database, params: SearchLogsParams) -> Result<SearchLogsResponse> {
     let pattern = Regex::new(&params.pattern)?;
-    let stream = params.stream.as_deref().unwrap_or("combined");
+    let stream = params.stream.unwrap_or_default();
     let max_matches = params.max_matches.unwrap_or(50);
 
     let services = if let Some(ref sid) = params.service_id {
@@ -366,8 +367,8 @@ mod tests {
         let (db, _, run_id, _dir) = setup_test_env().await;
         let params = GetLogsParams {
             id: run_id,
-            stream: Some("stdout".to_string()),
-            mode: Some("head".to_string()),
+            stream: Some(StreamFilter::Stdout),
+            mode: Some(LogMode::Head),
             lines: Some(2),
             start_time: None,
             end_time: None,
@@ -386,8 +387,8 @@ mod tests {
         let (db, _, _, _dir) = setup_test_env().await;
         let params = GetLogsParams {
             id: "test-web".to_string(),
-            stream: Some("stdout".to_string()),
-            mode: Some("tail".to_string()),
+            stream: Some(StreamFilter::Stdout),
+            mode: Some(LogMode::Tail),
             lines: Some(1),
             start_time: None,
             end_time: None,
@@ -420,7 +421,7 @@ mod tests {
         let (db, _, _, _dir) = setup_test_env().await;
         let params = GetLogsParams {
             id: "test-web".to_string(),
-            stream: Some("stderr".to_string()),
+            stream: Some(StreamFilter::Stderr),
             mode: None,
             lines: None,
             start_time: None,
@@ -458,7 +459,7 @@ mod tests {
         let params = SearchLogsParams {
             pattern: "INFO".to_string(),
             service_id: None,
-            stream: Some("stdout".to_string()),
+            stream: Some(StreamFilter::Stdout),
             start_time: None,
             end_time: None,
             context_lines: None,

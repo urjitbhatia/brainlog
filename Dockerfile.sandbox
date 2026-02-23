@@ -1,0 +1,23 @@
+FROM docker/sandbox-templates:claude-code
+
+USER root
+
+# System dependencies for rusqlite (bundled) and general build tooling
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain for the agent user
+USER agent
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+ENV PATH="/home/agent/.cargo/bin:${PATH}"
+
+# Install cargo tools
+RUN cargo install cargo-binstall
+RUN cargo binstall cargo-nextest --no-confirm
+
+# Warm the persistent env so cargo is available in every shell
+RUN echo '. "$HOME/.cargo/env"' >> /etc/sandbox-persistent.sh \
+    && echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> /etc/sandbox-persistent.sh

@@ -19,14 +19,36 @@ pub struct DiscoverServicesParams {
     pub query: Option<String>,
     /// Maximum number of results (default 20)
     pub limit: Option<usize>,
+    /// Group services by executable and working directory, showing only the latest run per group. Defaults to true.
+    pub group: Option<bool>,
+    /// Include a preview of the last N log lines from the latest run's combined stream. Omit or set to 0 to skip.
+    pub tail_lines: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DiscoverServicesResponse {
     pub services: Vec<ServiceInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GroupedServiceInfo {
+    pub executable: String,
+    pub working_dir: String,
+    pub run_count: usize,
+    pub names: Vec<String>,
+    pub latest_run: Option<RunInfo>,
+    pub commands: Vec<String>,
+    pub ports: Vec<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_preview: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DiscoverServicesGroupedResponse {
+    pub groups: Vec<GroupedServiceInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub id: String,
     pub name: Option<String>,
@@ -37,15 +59,17 @@ pub struct ServiceInfo {
     pub tags: Vec<TagInfo>,
     pub latest_run: Option<RunInfo>,
     pub ports: Vec<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_preview: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TagInfo {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RunInfo {
     pub id: String,
     pub status: String,

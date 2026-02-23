@@ -3,7 +3,7 @@ use regex::Regex;
 use std::path::Path;
 
 use crate::storage::logfile::{frames_to_text, LogReader};
-use crate::storage::models::LogMode;
+use crate::storage::models::{LogMode, StreamFilter};
 use crate::storage::Database;
 
 use super::types::*;
@@ -11,8 +11,134 @@ use super::types::*;
 pub fn discover_services(
     db: &Database,
     params: DiscoverServicesParams,
-) -> Result<DiscoverServicesResponse> {
+) -> Result<serde_json::Value> {
+    let group = params.group.unwrap_or(true);
+
+    if group {
+        discover_services_grouped(db, params)
+    } else {
+        discover_services_flat(db, params)
+    }
+}
+
+fn discover_services_grouped(
+    db: &Database,
+    params: DiscoverServicesParams,
+) -> Result<serde_json::Value> {
     let limit = params.limit.unwrap_or(20);
+    let tail_lines = params.tail_lines.unwrap_or(0);
+    let groups = db.list_services_grouped()?;
+
+    let name_filter = params.name.map(|n| n.to_lowercase());
+    let exe_filter = params.executable.map(|e| e.to_lowercase());
+
+    let mut result = Vec::new();
+    for group in groups {
+        if let Some(ref needle) = name_filter {
+            let matches = group.services.iter().any(|s| {
+                s.name
+                    .as_deref()
+                    .map(|n| n.to_lowercase().contains(needle))
+                    .unwrap_or(false)
+                    || s.executable.to_lowercase().contains(needle)
+            });
+            if !matches {
+                continue;
+            }
+        }
+        if let Some(ref needle) = exe_filter {
+            if !group.executable.to_lowercase().contains(needle) {
+                continue;
+            }
+        }
+        if let Some(ref status_filter) = params.status {
+            match &group.latest_run_status {
+                Some(s) if s.as_str() == status_filter => {}
+                _ => continue,
+            }
+        }
+
+        // Collect unique names and commands
+        let mut names: Vec<String> = group
+            .services
+            .iter()
+            .filter_map(|s| s.name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+
+        let mut commands: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for svc in &group.services {
+            commands.insert(svc.command_line.join(" "));
+        }
+
+        // Get ports from the latest run of any service in the group
+        let mut ports = Vec::new();
+        for svc in &group.services {
+            if let Some(run) = db.get_latest_run(&svc.id)? {
+                let svc_ports: Vec<u16> = db.get_ports(&run.id)?.iter().map(|p| p.port).collect();
+                ports.extend(svc_ports);
+            }
+        }
+        ports.sort();
+        ports.dedup();
+
+        if let Some(port_filter) = params.port {
+            if !ports.contains(&port_filter) {
+                continue;
+            }
+        }
+
+        let latest_run_row = group
+            .services
+            .iter()
+            .filter_map(|svc| db.get_latest_run(&svc.id).ok().flatten())
+            .max_by_key(|r| r.started_at);
+
+        let log_preview = if tail_lines > 0 {
+            latest_run_row
+                .as_ref()
+                .and_then(|r| read_log_preview(&r.log_dir, tail_lines))
+        } else {
+            None
+        };
+
+        let latest_run = latest_run_row.map(|r| RunInfo {
+            id: r.id,
+            status: r.status.as_str().to_string(),
+            started_at: r.started_at.to_rfc3339(),
+            ended_at: r.ended_at.map(|t| t.to_rfc3339()),
+            exit_code: r.exit_code,
+            pid: r.pid,
+        });
+
+        result.push(GroupedServiceInfo {
+            executable: group.executable,
+            working_dir: group.working_dir,
+            run_count: group.run_count,
+            names,
+            latest_run,
+            commands: commands.into_iter().collect(),
+            ports,
+            log_preview,
+        });
+
+        if result.len() >= limit {
+            break;
+        }
+    }
+
+    Ok(serde_json::to_value(DiscoverServicesGroupedResponse {
+        groups: result,
+    })?)
+}
+
+fn discover_services_flat(
+    db: &Database,
+    params: DiscoverServicesParams,
+) -> Result<serde_json::Value> {
+    let limit = params.limit.unwrap_or(20);
+    let tail_lines = params.tail_lines.unwrap_or(0);
 
     let tag_filters: Vec<(String, String)> = params
         .tags
@@ -51,6 +177,14 @@ pub fn discover_services(
             Vec::new()
         };
 
+        let log_preview = if tail_lines > 0 {
+            latest_run
+                .as_ref()
+                .and_then(|r| read_log_preview(&r.log_dir, tail_lines))
+        } else {
+            None
+        };
+
         let run_info = latest_run.map(|r| RunInfo {
             id: r.id,
             status: r.status.as_str().to_string(),
@@ -70,10 +204,13 @@ pub fn discover_services(
             tags: tag_infos,
             latest_run: run_info,
             ports,
+            log_preview,
         });
     }
 
-    Ok(DiscoverServicesResponse { services: result })
+    Ok(serde_json::to_value(DiscoverServicesResponse {
+        services: result,
+    })?)
 }
 
 pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse> {
@@ -164,6 +301,15 @@ pub fn search_logs(db: &Database, params: SearchLogsParams) -> Result<SearchLogs
         matches: all_matches,
         total_matches: total,
     })
+}
+
+fn read_log_preview(log_dir: &str, tail_lines: usize) -> Option<String> {
+    let reader = LogReader::new(Path::new(log_dir), StreamFilter::Combined);
+    let frames = reader.read_tail(tail_lines).ok()?;
+    if frames.is_empty() {
+        return None;
+    }
+    Some(frames_to_text(&frames))
 }
 
 fn resolve_log_dir(db: &Database, id: &str) -> Result<String> {
@@ -266,12 +412,10 @@ mod tests {
         )
     }
 
-    // ── discover_services ────────────────────────────────────────────
+    // ── discover_services (grouped, default) ──────────────────────────
 
-    #[tokio::test]
-    async fn discover_all_services() {
-        let (db, _, _, _dir) = setup_test_env().await;
-        let params = DiscoverServicesParams {
+    fn default_params() -> DiscoverServicesParams {
+        DiscoverServicesParams {
             name: None,
             tags: None,
             port: None,
@@ -279,8 +423,106 @@ mod tests {
             status: None,
             query: None,
             limit: None,
-        };
-        let resp = discover_services(&db, params).unwrap();
+            group: None,
+            tail_lines: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn discover_grouped_default() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let value = discover_services(&db, default_params()).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 1);
+
+        let g = &resp.groups[0];
+        assert_eq!(g.executable, "node");
+        assert_eq!(g.working_dir, "/tmp/project");
+        assert_eq!(g.run_count, 1);
+        assert_eq!(g.names, vec!["test-web"]);
+        assert!(g.latest_run.is_some());
+        assert_eq!(g.commands, vec!["node server.js"]);
+        let run = g.latest_run.as_ref().unwrap();
+        assert_eq!(run.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn discover_grouped_filter_by_name() {
+        let (db, _, _, _dir) = setup_test_env().await;
+
+        let mut params = default_params();
+        params.name = Some("web".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 1);
+
+        let mut params = default_params();
+        params.name = Some("nonexistent".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn discover_grouped_filter_by_executable() {
+        let (db, _, _, _dir) = setup_test_env().await;
+
+        let mut params = default_params();
+        params.executable = Some("node".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 1);
+
+        let mut params = default_params();
+        params.executable = Some("python".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 0);
+    }
+
+    // ── discover_services (tail_lines preview) ────────────────────
+
+    #[tokio::test]
+    async fn discover_grouped_with_log_preview() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let mut params = default_params();
+        params.tail_lines = Some(2);
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(resp.groups.len(), 1);
+        let preview = resp.groups[0].log_preview.as_ref().unwrap();
+        assert!(preview.contains("retrying"), "should have last line");
+    }
+
+    #[tokio::test]
+    async fn discover_grouped_without_log_preview() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let value = discover_services(&db, default_params()).unwrap();
+        let resp: DiscoverServicesGroupedResponse = serde_json::from_value(value).unwrap();
+        assert!(resp.groups[0].log_preview.is_none());
+    }
+
+    #[tokio::test]
+    async fn discover_flat_with_log_preview() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let mut params = default_params();
+        params.group = Some(false);
+        params.tail_lines = Some(3);
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
+        let preview = resp.services[0].log_preview.as_ref().unwrap();
+        assert!(preview.contains("retrying"), "should have last stdout line");
+    }
+
+    // ── discover_services (flat, group=false) ───────────────────────
+
+    #[tokio::test]
+    async fn discover_flat_all_services() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        let mut params = default_params();
+        params.group = Some(false);
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
         assert_eq!(resp.services.len(), 1);
 
         let svc = &resp.services[0];
@@ -296,47 +538,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_filter_by_name() {
+    async fn discover_flat_filter_by_name() {
         let (db, _, _, _dir) = setup_test_env().await;
-        let params = DiscoverServicesParams {
-            name: Some("web".to_string()),
-            tags: None,
-            port: None,
-            executable: None,
-            status: None,
-            query: None,
-            limit: None,
-        };
-        let resp = discover_services(&db, params).unwrap();
+        let mut params = default_params();
+        params.group = Some(false);
+        params.name = Some("web".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
         assert_eq!(resp.services.len(), 1);
 
-        // Non-matching name
-        let params = DiscoverServicesParams {
-            name: Some("nonexistent".to_string()),
-            tags: None,
-            port: None,
-            executable: None,
-            status: None,
-            query: None,
-            limit: None,
-        };
-        let resp = discover_services(&db, params).unwrap();
+        let mut params = default_params();
+        params.group = Some(false);
+        params.name = Some("nonexistent".to_string());
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
         assert_eq!(resp.services.len(), 0);
     }
 
     #[tokio::test]
-    async fn discover_filter_by_tag() {
+    async fn discover_flat_filter_by_tag() {
         let (db, _, _, _dir) = setup_test_env().await;
-        let params = DiscoverServicesParams {
-            name: None,
-            tags: Some(vec!["env:dev".to_string()]),
-            port: None,
-            executable: None,
-            status: None,
-            query: None,
-            limit: None,
-        };
-        let resp = discover_services(&db, params).unwrap();
+        let mut params = default_params();
+        params.group = Some(false);
+        params.tags = Some(vec!["env:dev".to_string()]);
+        let value = discover_services(&db, params).unwrap();
+        let resp: DiscoverServicesResponse = serde_json::from_value(value).unwrap();
         assert_eq!(resp.services.len(), 1);
     }
 

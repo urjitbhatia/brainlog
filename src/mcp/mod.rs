@@ -46,12 +46,12 @@ impl BrainlogMcp {
         params: Parameters<DiscoverServicesParams>,
     ) -> Result<CallToolResult, McpError> {
         let db = self.open_db()?;
-        let response = tools::discover_services(&db, params.0).map_err(|e| McpError {
+        let value = tools::discover_services(&db, params.0).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: format!("{}", e).into(),
             data: None,
         })?;
-        let json = serde_json::to_string_pretty(&response).unwrap_or_default();
+        let json = serde_json::to_string_pretty(&value).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 

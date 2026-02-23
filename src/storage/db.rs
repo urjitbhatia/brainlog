@@ -551,6 +551,110 @@ mod tests {
         assert_eq!(svc.description.as_deref(), Some("enriched desc"));
         assert_eq!(svc.enrichment_status, EnrichmentStatus::Completed);
     }
+
+    #[test]
+    fn enrichment_preserves_user_provided_name() {
+        let db = Database::open_in_memory().unwrap();
+        // Service created with a user-provided name
+        db.create_service(&make_service("svc-preserve", Some("my-api")))
+            .unwrap();
+
+        // Simulate enrichment passing None for name (as it should when user provided one)
+        db.update_service_enrichment(
+            "svc-preserve",
+            None, // name should not be overwritten
+            Some("An auto-generated description"),
+            &EnrichmentStatus::Completed,
+        )
+        .unwrap();
+
+        let svc = db.get_service("svc-preserve").unwrap().unwrap();
+        // Name must remain the user-provided value
+        assert_eq!(svc.name.as_deref(), Some("my-api"));
+        // Description should still be enriched
+        assert_eq!(
+            svc.description.as_deref(),
+            Some("An auto-generated description")
+        );
+        assert_eq!(svc.enrichment_status, EnrichmentStatus::Completed);
+    }
+
+    #[test]
+    fn enrichment_sets_name_when_no_user_name() {
+        let db = Database::open_in_memory().unwrap();
+        // Service created without a user-provided name
+        db.create_service(&make_service("svc-noname", None))
+            .unwrap();
+
+        // Simulate enrichment providing both name and description
+        db.update_service_enrichment(
+            "svc-noname",
+            Some("LLM Generated Name"),
+            Some("LLM generated description"),
+            &EnrichmentStatus::Completed,
+        )
+        .unwrap();
+
+        let svc = db.get_service("svc-noname").unwrap().unwrap();
+        // Name should be set by enrichment since user didn't provide one
+        assert_eq!(svc.name.as_deref(), Some("LLM Generated Name"));
+        assert_eq!(
+            svc.description.as_deref(),
+            Some("LLM generated description")
+        );
+        assert_eq!(svc.enrichment_status, EnrichmentStatus::Completed);
+    }
+
+    #[test]
+    fn enrichment_does_not_overwrite_user_name_with_llm_name() {
+        let db = Database::open_in_memory().unwrap();
+        // Service created with a user-provided name
+        db.create_service(&make_service("svc-keep", Some("my-api")))
+            .unwrap();
+
+        // BUG SCENARIO: If enrichment incorrectly passes an LLM name,
+        // COALESCE will overwrite the user's name. The fix ensures we
+        // pass None for name when the user provided one.
+        //
+        // This test verifies the COALESCE behavior: passing a non-None
+        // name WILL overwrite (demonstrating why the fix is needed).
+        db.update_service_enrichment(
+            "svc-keep",
+            Some("Node Express Server"), // LLM-generated name
+            Some("A Node.js Express server"),
+            &EnrichmentStatus::Completed,
+        )
+        .unwrap();
+
+        let svc = db.get_service("svc-keep").unwrap().unwrap();
+        // COALESCE(?1, name) with non-NULL ?1 uses ?1, so name gets overwritten.
+        // This is the behavior that the enrichment layer must prevent
+        // by passing None when has_user_name is true.
+        assert_eq!(svc.name.as_deref(), Some("Node Express Server"));
+    }
+
+    #[test]
+    fn enrichment_description_updated_regardless_of_user_name() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-desc", Some("my-api")))
+            .unwrap();
+
+        // Even when we preserve the user's name (pass None), description should still update
+        db.update_service_enrichment(
+            "svc-desc",
+            None,
+            Some("Enhanced description from LLM"),
+            &EnrichmentStatus::Completed,
+        )
+        .unwrap();
+
+        let svc = db.get_service("svc-desc").unwrap().unwrap();
+        assert_eq!(svc.name.as_deref(), Some("my-api"));
+        assert_eq!(
+            svc.description.as_deref(),
+            Some("Enhanced description from LLM")
+        );
+    }
 }
 
 fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service> {

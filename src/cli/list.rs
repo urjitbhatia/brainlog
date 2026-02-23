@@ -32,10 +32,7 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     }
 
     if !args.verbose {
-        println!(
-            "{:<8}  {:<20}  {:<12}  COMMAND",
-            "ID", "NAME", "STATUS"
-        );
+        println!("{:<8}  {:<20}  {:<12}  COMMAND", "ID", "NAME", "STATUS");
     }
 
     for service in &services {
@@ -62,11 +59,7 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             }
 
             if let Some(run) = db.get_latest_run(&service.id)? {
-                println!(
-                    "Latest Run:  {} ({})",
-                    &run.id[..8],
-                    run.status.as_str()
-                );
+                println!("Latest Run:  {} ({})", &run.id[..8], run.status.as_str());
                 println!("Started At:  {}", run.started_at);
                 if let Some(exit_code) = run.exit_code {
                     println!("Exit Code:   {}", exit_code);

@@ -13,6 +13,7 @@ pub async fn enrich_service(
     working_dir: &str,
     tags: &[String],
     user_desc: Option<&str>,
+    has_user_name: bool,
 ) {
     let client = match super::create_client(&config.llm) {
         Some(c) => c,
@@ -84,10 +85,13 @@ pub async fn enrich_service(
                 }
             }
 
+            // If the user provided a name, do not overwrite it with the LLM-generated one
+            let effective_name = if has_user_name { None } else { name.as_deref() };
+
             if let Ok(db) = Database::open(&config.db_path()) {
                 let _ = db.update_service_enrichment(
                     service_id,
-                    name.as_deref(),
+                    effective_name,
                     description.as_deref(),
                     &EnrichmentStatus::Completed,
                 );

@@ -35,10 +35,22 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Compute name column width from data (minimum 4 for "NAME" header)
+    let name_width = services
+        .iter()
+        .map(|s| s.name.as_deref().unwrap_or(&s.id[..8]).len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+
     if !args.verbose {
         println!(
-            "{:<8}  {:<20}  {:<12}  {:<20}  COMMAND",
-            "ID", "NAME", "STATUS", "CREATED"
+            "{:<8}  {:<nw$}  {:<12}  {:<20}  COMMAND",
+            "ID",
+            "NAME",
+            "STATUS",
+            "CREATED",
+            nw = name_width
         );
     }
 
@@ -95,12 +107,13 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             };
             let created = service.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
             println!(
-                "{:<8}  {:<20}  {:<12}  {:<20}  {}",
+                "{:<8}  {:<nw$}  {:<12}  {:<20}  {}",
                 &service.id[..8],
                 name_display,
                 status,
                 created,
-                service.command_line.join(" ")
+                service.command_line.join(" "),
+                nw = name_width
             );
         }
     }

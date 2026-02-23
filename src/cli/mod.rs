@@ -6,6 +6,8 @@ pub mod search;
 
 use clap::{Parser, Subcommand};
 
+use crate::storage::models::StreamFilter;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "brainlog",
@@ -79,8 +81,8 @@ pub struct LogsArgs {
     pub follow: bool,
 
     /// Stream to view: stdout, stderr, stdin, combined
-    #[arg(short, long, default_value = "combined")]
-    pub stream: String,
+    #[arg(short, long, value_enum, default_value_t = StreamFilter::Combined)]
+    pub stream: StreamFilter,
 }
 
 #[derive(Parser, Debug)]
@@ -93,8 +95,8 @@ pub struct SearchArgs {
     pub service: Option<String>,
 
     /// Stream to search: stdout, stderr, stdin, combined
-    #[arg(long, default_value = "combined")]
-    pub stream: String,
+    #[arg(long, value_enum, default_value_t = StreamFilter::Combined)]
+    pub stream: StreamFilter,
 
     /// Maximum number of matches
     #[arg(short, long, default_value = "50")]

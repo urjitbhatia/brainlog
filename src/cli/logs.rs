@@ -13,10 +13,10 @@ pub async fn handle_logs(args: LogsArgs) -> Result<()> {
     // Resolve ID to a log directory
     let log_dir = resolve_log_dir(&db, &args.id)?;
 
-    let reader = LogReader::new(Path::new(&log_dir), &args.stream);
+    let reader = LogReader::new(Path::new(&log_dir), args.stream);
 
     if args.follow {
-        follow_logs(&reader, &args.stream).await?;
+        follow_logs(&reader).await?;
     } else if let Some(n) = args.tail {
         let frames = reader.read_tail(n)?;
         print!("{}", frames_to_text(&frames));
@@ -64,7 +64,7 @@ fn resolve_log_dir(db: &Database, id: &str) -> Result<String> {
     bail!("No service or run found matching '{}'", id);
 }
 
-async fn follow_logs(reader: &LogReader, _stream: &str) -> Result<()> {
+async fn follow_logs(reader: &LogReader) -> Result<()> {
     let mut last_size = reader.file_size()?;
 
     // Show last 10 frames first

@@ -80,6 +80,13 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::Purge(args)) => match cli::purge::handle_purge(args).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("brainlog: {:#}", e);
+                ExitCode::FAILURE
+            }
+        },
         None => {
             // No command provided, print help
             use clap::CommandFactory;

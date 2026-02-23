@@ -1,6 +1,7 @@
 pub mod list;
 pub mod logs;
 pub mod mcp;
+pub mod purge;
 pub mod run;
 pub mod search;
 
@@ -32,6 +33,8 @@ pub enum Commands {
     Search(SearchArgs),
     /// Start the MCP server (stdio transport)
     Mcp,
+    /// Purge old services and their logs
+    Purge(PurgeArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -146,6 +149,21 @@ pub struct SearchArgs {
     pub logs_only: bool,
 }
 
+#[derive(Parser, Debug)]
+pub struct PurgeArgs {
+    /// Duration threshold: delete services older than this (e.g. 10h, 30m, 5d, 3600s)
+    #[arg(long)]
+    pub before: String,
+
+    /// Show what would be purged without deleting
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip confirmation prompt
+    #[arg(long)]
+    pub force: bool,
+}
+
 /// Known subcommand names for direct mode detection
 pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "run",
@@ -153,6 +171,7 @@ pub const KNOWN_SUBCOMMANDS: &[&str] = &[
     "logs",
     "search",
     "mcp",
+    "purge",
     "help",
     "--help",
     "-h",

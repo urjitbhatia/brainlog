@@ -445,9 +445,102 @@ impl Database {
         Ok(result)
     }
 
+    /// Find services whose latest run ended before `cutoff`, or that have no runs
+    /// and were created before `cutoff`.
+    pub fn find_purgeable_services(
+        &self,
+        cutoff: &chrono::DateTime<Utc>,
+    ) -> Result<Vec<PurgeCandidate>> {
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let sql = "
+            SELECT s.id, s.name, s.executable
+            FROM services s
+            WHERE (
+                -- Services where the most recent run ended before cutoff
+                EXISTS (
+                    SELECT 1 FROM runs r WHERE r.service_id = s.id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM runs r WHERE r.service_id = s.id
+                    AND (r.ended_at IS NULL OR r.ended_at >= ?1)
+                )
+            )
+            OR (
+                -- Services with no runs, created before cutoff
+                NOT EXISTS (
+                    SELECT 1 FROM runs r WHERE r.service_id = s.id
+                )
+                AND s.created_at < ?1
+            )
+        ";
+
+        let mut stmt = self.conn.prepare(sql)?;
+        let candidates: Vec<PurgeCandidate> = stmt
+            .query_map(params![cutoff_str], |row| {
+                Ok(PurgeCandidate {
+                    service_id: row.get(0)?,
+                    name: row.get(1)?,
+                    executable: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to find purgeable services")?;
+
+        Ok(candidates)
+    }
+
+    /// Get all log directories for a service's runs.
+    pub fn get_run_log_dirs(&self, service_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT log_dir FROM runs WHERE service_id = ?1")?;
+        let dirs = stmt
+            .query_map(params![service_id], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()
+            .context("Failed to get run log dirs")?;
+        Ok(dirs)
+    }
+
+    /// Delete a service and all its associated data (runs, ports, tags) from the DB.
+    /// Returns the number of runs deleted.
+    pub fn delete_service_cascade(&self, service_id: &str) -> Result<usize> {
+        // Delete ports for all runs of this service
+        self.conn.execute(
+            "DELETE FROM ports WHERE run_id IN (SELECT id FROM runs WHERE service_id = ?1)",
+            params![service_id],
+        )?;
+
+        // Delete runs
+        let runs_deleted = self.conn.execute(
+            "DELETE FROM runs WHERE service_id = ?1",
+            params![service_id],
+        )?;
+
+        // Delete tags
+        self.conn.execute(
+            "DELETE FROM tags WHERE service_id = ?1",
+            params![service_id],
+        )?;
+
+        // Delete the service itself
+        self.conn
+            .execute("DELETE FROM services WHERE id = ?1", params![service_id])?;
+
+        Ok(runs_deleted)
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// Information about a service that is a candidate for purging.
+#[derive(Debug, Clone)]
+pub struct PurgeCandidate {
+    pub service_id: String,
+    pub name: Option<String>,
+    pub executable: String,
 }
 
 /// A service that matched a metadata search, along with what fields matched.
@@ -1296,6 +1389,129 @@ mod tests {
             .unwrap();
 
         assert_eq!(db.count_runs("cr-svc").unwrap(), 2);
+    }
+
+    #[test]
+    fn purge_finds_old_services_with_ended_runs() {
+        let db = Database::open_in_memory().unwrap();
+        let mut old_svc = make_service("svc-old", Some("old-app"));
+        old_svc.created_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&old_svc).unwrap();
+
+        let mut old_run = make_run("run-old", "svc-old", RunStatus::Completed);
+        old_run.started_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        old_run.ended_at = Some(
+            chrono::DateTime::parse_from_rfc3339("2023-01-01T01:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        );
+        db.create_run(&old_run).unwrap();
+
+        // Recent service should not be purgeable
+        db.create_service(&make_service("svc-new", Some("new-app")))
+            .unwrap();
+        let mut new_run = make_run("run-new", "svc-new", RunStatus::Completed);
+        new_run.ended_at = Some(Utc::now());
+        db.create_run(&new_run).unwrap();
+
+        let cutoff = Utc::now() - chrono::Duration::days(1);
+        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].service_id, "svc-old");
+    }
+
+    #[test]
+    fn purge_finds_services_with_no_runs() {
+        let db = Database::open_in_memory().unwrap();
+        let mut old_svc = make_service("svc-noruns", Some("no-runs-app"));
+        old_svc.created_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&old_svc).unwrap();
+
+        // New service with no runs should NOT be found
+        db.create_service(&make_service("svc-new-noruns", Some("new-no-runs")))
+            .unwrap();
+
+        let cutoff = Utc::now() - chrono::Duration::days(1);
+        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].service_id, "svc-noruns");
+    }
+
+    #[test]
+    fn purge_skips_services_with_running_runs() {
+        let db = Database::open_in_memory().unwrap();
+        let mut svc = make_service("svc-running", Some("running-app"));
+        svc.created_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        db.create_service(&svc).unwrap();
+
+        let mut run = make_run("run-running", "svc-running", RunStatus::Running);
+        run.started_at = chrono::DateTime::parse_from_rfc3339("2023-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        run.ended_at = None;
+        db.create_run(&run).unwrap();
+
+        let cutoff = Utc::now() - chrono::Duration::days(1);
+        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn delete_service_cascade_removes_all_related_data() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-del", Some("delete-me")))
+            .unwrap();
+        db.add_tag("svc-del", "env", "test").unwrap();
+        db.create_run(&make_run("run-del1", "svc-del", RunStatus::Completed))
+            .unwrap();
+        db.create_run(&make_run("run-del2", "svc-del", RunStatus::Completed))
+            .unwrap();
+        db.add_port("run-del1", 8080, "tcp").unwrap();
+
+        let runs_deleted = db.delete_service_cascade("svc-del").unwrap();
+        assert_eq!(runs_deleted, 2);
+
+        // Verify everything is gone
+        assert!(db.get_service("svc-del").unwrap().is_none());
+        assert!(db.get_tags("svc-del").unwrap().is_empty());
+        assert!(db.list_runs("svc-del").unwrap().is_empty());
+        assert!(db.get_ports("run-del1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_run_log_dirs_returns_all_dirs() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-logs", Some("log-app")))
+            .unwrap();
+
+        let mut run1 = make_run("run-l1", "svc-logs", RunStatus::Completed);
+        run1.log_dir = "/tmp/logs/run-l1".to_string();
+        db.create_run(&run1).unwrap();
+
+        let mut run2 = make_run("run-l2", "svc-logs", RunStatus::Completed);
+        run2.log_dir = "/tmp/logs/run-l2".to_string();
+        db.create_run(&run2).unwrap();
+
+        let dirs = db.get_run_log_dirs("svc-logs").unwrap();
+        assert_eq!(dirs.len(), 2);
+        assert!(dirs.contains(&"/tmp/logs/run-l1".to_string()));
+        assert!(dirs.contains(&"/tmp/logs/run-l2".to_string()));
+    }
+
+    #[test]
+    fn purge_empty_db_returns_no_candidates() {
+        let db = Database::open_in_memory().unwrap();
+        let cutoff = Utc::now() - chrono::Duration::days(1);
+        let candidates = db.find_purgeable_services(&cutoff).unwrap();
+        assert!(candidates.is_empty());
     }
 }
 

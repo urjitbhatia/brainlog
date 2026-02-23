@@ -48,22 +48,20 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
 
     // Print metadata section if we have metadata matches
     let has_metadata = !metadata_matches.is_empty();
-    if !args.logs_only {
-        if has_metadata {
-            println!("Services matching '{}':", args.pattern);
-            for m in &metadata_matches {
-                let name_display = m.service.name.as_deref().unwrap_or(&m.service.id[..8]);
-                let matched_summary = m.matched_fields.join(", ");
-                println!(
-                    "  {}  {}  ({})  [{}]",
-                    &m.service.id[..8],
-                    name_display,
-                    m.status,
-                    matched_summary,
-                );
-            }
-            println!();
+    if !args.logs_only && has_metadata {
+        println!("Services matching '{}':", args.pattern);
+        for m in &metadata_matches {
+            let name_display = m.service.name.as_deref().unwrap_or(&m.service.id[..8]);
+            let matched_summary = m.matched_fields.join(", ");
+            println!(
+                "  {}  {}  ({})  [{}]",
+                &m.service.id[..8],
+                name_display,
+                m.status,
+                matched_summary,
+            );
         }
+        println!();
     }
 
     // Collect log matches

@@ -113,14 +113,9 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     // Spawn a task that waits for the PID and starts background work immediately
     let run_id_bg = run_id.clone();
     let service_id_bg = service_id.clone();
-    let config_bg = config.clone();
-    let working_dir_bg = working_dir.clone();
     let command_bg = args.command.clone();
-    let tags_bg = args.tag.clone();
-    let desc_bg = args.desc.clone();
     let has_user_name = args.name.is_some() || args.resume.is_some();
     let port_cancel_bg = port_cancel.clone();
-    let db_path_bg = db_path.clone();
 
     let bg_handle = tokio::spawn(async move {
         let pid = match pid_rx.await {
@@ -130,7 +125,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
         // Record PID in database while child is still running
         if pid > 0 {
-            if let Ok(db) = Database::open(&db_path_bg) {
+            if let Ok(db) = Database::open(&db_path) {
                 if let Err(e) = db.update_run_pid(&run_id_bg, pid) {
                     tracing::warn!("Failed to record child PID: {e}");
                 }
@@ -138,10 +133,10 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         }
 
         // Start port detection while child is still running
-        if config_bg.port_detection.enabled && pid > 0 {
+        if config.port_detection.enabled && pid > 0 {
             let run_id_port = run_id_bg.clone();
-            let db_path_port = db_path_bg.clone();
-            let poll_interval = config_bg.port_detection.poll_interval_secs;
+            let db_path_port = db_path.clone();
+            let poll_interval = config.port_detection.poll_interval_secs;
             let cancel = port_cancel_bg;
             tokio::spawn(async move {
                 platform::poll_ports(pid, &run_id_port, &db_path_port, poll_interval, cancel).await;
@@ -149,15 +144,15 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         }
 
         // LLM enrichment (fire-and-forget)
-        if config_bg.enrichment.enabled {
+        if config.enrichment.enabled {
             tokio::spawn(async move {
                 llm::enrichment::enrich_service(
-                    &config_bg,
+                    &config,
                     &service_id_bg,
                     &command_bg,
-                    &working_dir_bg,
-                    &tags_bg,
-                    desc_bg.as_deref(),
+                    &working_dir,
+                    &args.tag,
+                    args.desc.as_deref(),
                     has_user_name,
                 )
                 .await;

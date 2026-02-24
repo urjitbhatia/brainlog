@@ -8,7 +8,7 @@ pub struct OpenAiClient {
     base_url: String,
     api_key: Option<String>,
     model: String,
-    timeout_secs: u64,
+    http: reqwest::Client,
 }
 
 impl OpenAiClient {
@@ -18,11 +18,15 @@ impl OpenAiClient {
         model: String,
         timeout_secs: u64,
     ) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .build()
+            .expect("failed to build HTTP client");
         Self {
             base_url,
             api_key,
             model,
-            timeout_secs,
+            http,
         }
     }
 }
@@ -59,10 +63,6 @@ struct ResponseMessage {
 #[async_trait]
 impl LlmClient for OpenAiClient {
     async fn complete(&self, messages: Vec<Message>) -> Result<String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(self.timeout_secs))
-            .build()?;
-
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
         let chat_messages: Vec<ChatMessage> = messages
@@ -80,7 +80,7 @@ impl LlmClient for OpenAiClient {
             temperature: 0.3,
         };
 
-        let mut req = client.post(&url).json(&request);
+        let mut req = self.http.post(&url).json(&request);
         if let Some(ref key) = self.api_key {
             req = req.bearer_auth(key);
         }

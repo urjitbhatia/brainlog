@@ -74,6 +74,22 @@ impl Database {
         }
     }
 
+    /// Find services whose ID starts with the given prefix.
+    /// Returns at most `limit` matches, useful for prefix-based resolution.
+    pub fn find_services_by_id_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<Service>> {
+        let pattern = format!("{}%", prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, executable, command_line, working_dir, created_at, updated_at, enrichment_status
+             FROM services WHERE id LIKE ?1 LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, limit as i64], row_to_service)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
     pub fn update_service_enrichment(
         &self,
         service_id: &str,
@@ -353,9 +369,8 @@ impl Database {
             anyhow::bail!("Service '{}' has no runs", id);
         }
 
-        // 4. Try prefix match on service ID
-        let services = self.list_services()?;
-        let matches: Vec<_> = services.iter().filter(|s| s.id.starts_with(id)).collect();
+        // 4. Try prefix match on service ID (SQL LIKE query, limit to 2 to detect ambiguity)
+        let matches = self.find_services_by_id_prefix(id, 2)?;
 
         match matches.len() {
             1 => {

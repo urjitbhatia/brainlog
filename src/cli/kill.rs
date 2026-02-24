@@ -136,12 +136,8 @@ fn resolve_service(
         return Ok((service, "name"));
     }
 
-    // Try ID prefix match
-    let services = db.list_services()?;
-    let prefix_matches: Vec<_> = services
-        .into_iter()
-        .filter(|s| s.id.starts_with(target))
-        .collect();
+    // Try ID prefix match (SQL LIKE query, limit to 3 for display)
+    let prefix_matches = db.find_services_by_id_prefix(target, 3)?;
 
     match prefix_matches.len() {
         0 => bail!("No service found matching '{}'", target),

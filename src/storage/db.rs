@@ -219,7 +219,7 @@ impl Database {
              FROM services ORDER BY created_at DESC",
         )?;
         let services = stmt
-            .query_map([], row_to_service_rusqlite)?
+            .query_map([], row_to_service)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to list services")?;
         Ok(services)
@@ -231,7 +231,7 @@ impl Database {
              FROM runs WHERE service_id = ?1 ORDER BY started_at DESC",
         )?;
         let runs = stmt
-            .query_map(params![service_id], row_to_run_rusqlite)?
+            .query_map(params![service_id], row_to_run)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to list runs")?;
         Ok(runs)
@@ -320,7 +320,7 @@ impl Database {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let services = stmt
-            .query_map(params_refs.as_slice(), row_to_service_rusqlite)?
+            .query_map(params_refs.as_slice(), row_to_service)?
             .collect::<Result<Vec<_>, _>>()
             .context("Failed to search services")?;
         Ok(services)
@@ -1663,11 +1663,7 @@ mod tests {
     }
 }
 
-fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service> {
-    row_to_service_rusqlite(row).map_err(|e| anyhow::anyhow!("{}", e))
-}
-
-fn row_to_service_rusqlite(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite::Error> {
+fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite::Error> {
     let command_line_json: String = row.get(4)?;
     let created_at_str: String = row.get(6)?;
     let updated_at_str: String = row.get(7)?;
@@ -1690,11 +1686,7 @@ fn row_to_service_rusqlite(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite:
     })
 }
 
-fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run> {
-    row_to_run_rusqlite(row).map_err(|e| anyhow::anyhow!("{}", e))
-}
-
-fn row_to_run_rusqlite(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> {
+fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> {
     let started_at_str: String = row.get(3)?;
     let ended_at_str: Option<String> = row.get(4)?;
     let status_str: String = row.get(7)?;

@@ -51,7 +51,7 @@ impl BrainlogMcp {
             message: format!("{}", e).into(),
             data: None,
         })?;
-        let json = serde_json::to_string_pretty(&value).unwrap_or_default();
+        let json = serde_json::to_string(&value).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -69,7 +69,7 @@ impl BrainlogMcp {
             message: format!("{}", e).into(),
             data: None,
         })?;
-        let json = serde_json::to_string_pretty(&response).unwrap_or_default();
+        let json = serde_json::to_string(&response).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -87,7 +87,7 @@ impl BrainlogMcp {
             message: format!("{}", e).into(),
             data: None,
         })?;
-        let json = serde_json::to_string_pretty(&response).unwrap_or_default();
+        let json = serde_json::to_string(&response).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
@@ -116,7 +116,7 @@ impl BrainlogMcp {
                 message: format!("{}", e).into(),
                 data: None,
             })?;
-        let json = serde_json::to_string_pretty(&response).unwrap_or_default();
+        let json = serde_json::to_string(&response).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }

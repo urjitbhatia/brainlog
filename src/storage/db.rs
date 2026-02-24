@@ -1663,6 +1663,14 @@ mod tests {
     }
 }
 
+fn parse_datetime(s: &str) -> Result<chrono::DateTime<chrono::Utc>, rusqlite::Error> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
+}
+
 fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite::Error> {
     let command_line_json: String = row.get(4)?;
     let created_at_str: String = row.get(6)?;
@@ -1676,12 +1684,8 @@ fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite::Error> {
         executable: row.get(3)?,
         command_line: serde_json::from_str(&command_line_json).unwrap_or_default(),
         working_dir: row.get(5)?,
-        created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
-            .unwrap_or_default()
-            .with_timezone(&chrono::Utc),
-        updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at_str)
-            .unwrap_or_default()
-            .with_timezone(&chrono::Utc),
+        created_at: parse_datetime(&created_at_str)?,
+        updated_at: parse_datetime(&updated_at_str)?,
         enrichment_status: EnrichmentStatus::parse(&enrichment_str),
     })
 }
@@ -1695,14 +1699,8 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> {
         id: row.get(0)?,
         service_id: row.get(1)?,
         pid: row.get::<_, Option<i64>>(2)?.map(|p| p as u32),
-        started_at: chrono::DateTime::parse_from_rfc3339(&started_at_str)
-            .unwrap_or_default()
-            .with_timezone(&chrono::Utc),
-        ended_at: ended_at_str.and_then(|s| {
-            chrono::DateTime::parse_from_rfc3339(&s)
-                .ok()
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-        }),
+        started_at: parse_datetime(&started_at_str)?,
+        ended_at: ended_at_str.map(|s| parse_datetime(&s)).transpose()?,
         exit_code: row.get(5)?,
         log_dir: row.get(6)?,
         status: RunStatus::parse(&status_str),

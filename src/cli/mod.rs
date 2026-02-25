@@ -189,21 +189,19 @@ pub struct KillArgs {
     pub force: bool,
 }
 
-/// Known subcommand names for direct mode detection
-pub const KNOWN_SUBCOMMANDS: &[&str] = &[
-    "run",
-    "list",
-    "logs",
-    "search",
-    "kill",
-    "mcp",
-    "purge",
-    "help",
-    "--help",
-    "-h",
-    "--version",
-    "-V",
-];
+/// Built-in flags that should not be treated as direct-mode commands.
+const BUILTIN_FLAGS: &[&str] = &["help", "--help", "-h", "--version", "-V"];
+
+/// Check if a string is a known subcommand (derived from the Commands enum via clap).
+fn is_known_subcommand(name: &str) -> bool {
+    use clap::CommandFactory;
+    if BUILTIN_FLAGS.contains(&name) {
+        return true;
+    }
+    Cli::command()
+        .get_subcommands()
+        .any(|cmd| cmd.get_name() == name)
+}
 
 /// Parse direct mode arguments from argv.
 /// Returns (RunArgs, remaining) if argv[1] is not a known subcommand.
@@ -213,7 +211,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
     }
 
     let first = &args[1];
-    if KNOWN_SUBCOMMANDS.contains(&first.as_str()) {
+    if is_known_subcommand(first) {
         return None;
     }
 
@@ -328,7 +326,21 @@ mod tests {
 
     #[test]
     fn known_subcommand_returns_none() {
-        for cmd in KNOWN_SUBCOMMANDS {
+        let subcommands = [
+            "run",
+            "list",
+            "logs",
+            "search",
+            "kill",
+            "mcp",
+            "purge",
+            "help",
+            "--help",
+            "-h",
+            "--version",
+            "-V",
+        ];
+        for cmd in subcommands {
             let result = parse_direct_mode(&args(&["brainlog", cmd]));
             assert!(
                 result.is_none(),

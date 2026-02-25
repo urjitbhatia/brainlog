@@ -4,6 +4,8 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use signal_hook::consts::SIGUSR1;
 use signal_hook_tokio::Signals;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -333,6 +335,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     let _ = sigusr1_handle.await;
 
     // Print resume hint
+    let has_user_name = effective_name.is_some();
     let svc_name = if let Some(name) = effective_name {
         name
     } else {
@@ -340,7 +343,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
             .and_then(|s| s.name)
             .unwrap_or_else(|| service_id.clone())
     };
-    print_resume_hint(&svc_name, &args.command);
+    print_resume_hint(&svc_name, &args.command, has_user_name);
 
     Ok(last_exit_code)
 }
@@ -437,18 +440,28 @@ fn format_exit_message(exit_code: i32) -> String {
 }
 
 /// Print a resume hint to stderr so the user knows how to restart.
-fn print_resume_hint(name: &str, command: &[String]) {
+/// If the name was user-provided (via `-n`), suggest `-n name` for resume.
+/// Otherwise suggest `--resume <derived-name>`.
+fn print_resume_hint(name: &str, command: &[String], user_provided_name: bool) {
     let cmd_str = command
         .iter()
         .map(|s| shell_quote(s))
         .collect::<Vec<_>>()
         .join(" ");
     eprintln!();
-    eprintln!(
-        "To resume under the same name, run:\n  brainlog --resume {} {}",
-        shell_quote(name),
-        cmd_str,
-    );
+    if user_provided_name {
+        eprintln!(
+            "To resume under the same name, run:\n  brainlog -n {} {}",
+            shell_quote(name),
+            cmd_str,
+        );
+    } else {
+        eprintln!(
+            "To resume under the same name, run:\n  brainlog --resume {} {}",
+            shell_quote(name),
+            cmd_str,
+        );
+    }
 }
 
 /// Simple shell quoting: wrap in single quotes if the string contains special characters.
@@ -469,12 +482,17 @@ fn shell_quote(s: &str) -> String {
 /// These are common "do nothing" verbs used by package managers and task runners.
 const NOISE_SUBCOMMANDS: &[&str] = &["run", "exec"];
 
+/// Maximum number of parts (executable + positional args) in a derived name.
+const MAX_NAME_PARTS: usize = 4;
+
 /// Derive a human-readable service name from the working directory and command.
 ///
 /// Format: `<cwd_basename>/<executable>-<arg1>-<arg2>-...`
 ///
 /// Noise subcommands like `run` (e.g. `pnpm run dev`) are stripped so the
 /// derived name stays concise (`pnpm-dev` instead of `pnpm-run-dev`).
+/// Flags (args starting with `-`) and their values are skipped entirely.
+/// At most [`MAX_NAME_PARTS`] parts are kept to prevent overly long names.
 /// Arguments preserve colons (e.g. `dev:with-binding`) and are joined with `-`.
 /// The working directory basename is separated from the command part by `/`.
 fn derive_name(working_dir: &str, command: &[String]) -> String {
@@ -483,25 +501,46 @@ fn derive_name(working_dir: &str, command: &[String]) -> String {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let filtered: Vec<&str> = command
-        .iter()
-        .enumerate()
-        .filter(|(i, arg)| {
-            // Only filter noise subcommands in non-first position
-            if *i == 0 {
-                return true;
-            }
-            !NOISE_SUBCOMMANDS.contains(&arg.as_str())
-        })
-        .map(|(_, arg)| arg.as_str())
-        .collect();
+    let mut filtered: Vec<&str> = Vec::new();
+
+    for (i, arg) in command.iter().enumerate() {
+        // Always include the executable (index 0)
+        if i == 0 {
+            filtered.push(arg);
+            continue;
+        }
+
+        // Skip flags (we can't distinguish boolean flags from value flags,
+        // so just skip anything starting with `-`)
+        if arg.starts_with('-') {
+            continue;
+        }
+
+        // Skip noise subcommands
+        if NOISE_SUBCOMMANDS.contains(&arg.as_str()) {
+            continue;
+        }
+
+        filtered.push(arg);
+
+        if filtered.len() >= MAX_NAME_PARTS {
+            break;
+        }
+    }
 
     let cmd_part = filtered.join("-");
 
+    // Append a short hash of the full command (including flags) so that
+    // invocations differing only in flag values get distinct names.
+    let mut hasher = DefaultHasher::new();
+    command.hash(&mut hasher);
+    let hash = hasher.finish();
+    let short_hash = format!("{:06x}", hash & 0xFFFFFF); // 6 hex chars
+
     if dir_basename.is_empty() {
-        cmd_part
+        format!("{cmd_part}-{short_hash}")
     } else {
-        format!("{dir_basename}/{cmd_part}")
+        format!("{dir_basename}/{cmd_part}-{short_hash}")
     }
 }
 
@@ -519,7 +558,9 @@ mod tests {
                 "dev:with-binding".to_string(),
             ],
         );
-        assert_eq!(name, "web/pnpm-dev:with-binding");
+        assert!(name.starts_with("web/pnpm-dev:with-binding-"));
+        // Ends with 6 hex chars
+        assert_eq!(name.len(), "web/pnpm-dev:with-binding-".len() + 6);
     }
 
     #[test]
@@ -528,7 +569,7 @@ mod tests {
             "/Users/urjit/code/pimlico/api",
             &["make".to_string(), "dev".to_string()],
         );
-        assert_eq!(name, "api/make-dev");
+        assert!(name.starts_with("api/make-dev-"));
     }
 
     #[test]
@@ -537,20 +578,105 @@ mod tests {
             "/home/user/project",
             &["cargo".to_string(), "test".to_string()],
         );
-        assert_eq!(name, "project/cargo-test");
+        assert!(name.starts_with("project/cargo-test-"));
     }
 
     #[test]
     fn test_derive_name_single_command() {
         let name = derive_name("/home/user/myapp", &["node".to_string()]);
-        assert_eq!(name, "myapp/node");
+        assert!(name.starts_with("myapp/node-"));
     }
 
     #[test]
     fn test_derive_name_root_dir() {
         let name = derive_name("/", &["ls".to_string()]);
-        // Root has no basename, so just the command part
-        assert_eq!(name, "ls");
+        // Root has no basename, so just the command part + hash
+        assert!(name.starts_with("ls-"));
+    }
+
+    #[test]
+    fn test_derive_name_skips_flags() {
+        let name = derive_name(
+            "/Users/urjit/code/report-generator-v2",
+            &[
+                "uv".to_string(),
+                "run".to_string(),
+                "rg2".to_string(),
+                "critique".to_string(),
+                "--gemini".to_string(),
+                "--jurisdiction".to_string(),
+                "malta".to_string(),
+                "--vertical".to_string(),
+                "gambling".to_string(),
+            ],
+        );
+        // Flags are skipped, "run" is noise, positional-looking values remain
+        // capped at MAX_NAME_PARTS (4): uv, rg2, critique, malta
+        assert!(name.starts_with("report-generator-v2/uv-rg2-critique-malta-"));
+    }
+
+    #[test]
+    fn test_derive_name_different_flags_different_hash() {
+        let name_a = derive_name(
+            "/app",
+            &[
+                "rg2".to_string(),
+                "critique".to_string(),
+                "--jurisdiction".to_string(),
+                "malta".to_string(),
+            ],
+        );
+        let name_b = derive_name(
+            "/app",
+            &[
+                "rg2".to_string(),
+                "critique".to_string(),
+                "--jurisdiction".to_string(),
+                "cyprus".to_string(),
+            ],
+        );
+        // Same prefix but different hashes
+        assert!(name_a.starts_with("app/rg2-critique-malta-"));
+        assert!(name_b.starts_with("app/rg2-critique-cyprus-"));
+        assert_ne!(name_a, name_b);
+    }
+
+    #[test]
+    fn test_derive_name_deterministic() {
+        let cmd = &["cargo".to_string(), "test".to_string()];
+        let a = derive_name("/project", cmd);
+        let b = derive_name("/project", cmd);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_derive_name_caps_at_max_parts() {
+        let name = derive_name(
+            "/home/user/project",
+            &[
+                "python".to_string(),
+                "manage.py".to_string(),
+                "migrate".to_string(),
+                "myapp".to_string(),
+                "zero".to_string(),
+            ],
+        );
+        // Max 4 parts: python, manage.py, migrate, myapp
+        assert!(name.starts_with("project/python-manage.py-migrate-myapp-"));
+    }
+
+    #[test]
+    fn test_derive_name_flag_with_equals() {
+        let name = derive_name(
+            "/home/user/app",
+            &[
+                "cargo".to_string(),
+                "test".to_string(),
+                "--color=always".to_string(),
+            ],
+        );
+        // --color=always is a flag, skipped
+        assert!(name.starts_with("app/cargo-test-"));
     }
 
     #[test]

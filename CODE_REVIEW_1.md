@@ -95,14 +95,17 @@ With Rust 2021 edition and recent compiler support for async traits, `async-trai
 
 ## 3. Potential Optimizations
 
-### 3.1 Log file reading is fully synchronous and unbuffered
-`LogReader` uses `std::fs::File` with raw `read_exact` calls. For large log files, a `BufReader` wrapper would significantly reduce syscall overhead. Additionally, all log reading happens synchronously in an async context — blocking the tokio runtime.
+### ~~3.1 Log file reading is fully synchronous and unbuffered~~ FIXED
+~~`LogReader` uses `std::fs::File` with raw `read_exact` calls. For large log files, a `BufReader` wrapper would significantly reduce syscall overhead. Additionally, all log reading happens synchronously in an async context — blocking the tokio runtime.~~
+**Fixed on master** (commit `18303d5`). All `File::open` calls in `LogReader` now wrap with `BufReader`. `read_one_frame` made generic over `impl Read`.
 
-### 3.2 `read_tail` should use reverse scanning
-Currently reads the entire file to get the last N frames. The binary frame format has fixed-size headers, but variable payloads prevent simple reverse seeking. However, the file could be memory-mapped or scanned from a known offset (stored in metadata) to avoid reading the entire file.
+### ~~3.2 `read_range` and `read_tail` read entire file~~ FIXED
+~~Currently reads the entire file to get the last N frames. The binary frame format has fixed-size headers, but variable payloads prevent simple reverse seeking. However, the file could be memory-mapped or scanned from a known offset (stored in metadata) to avoid reading the entire file.~~
+**Fixed on master** (commit `18303d5`). `read_range` now streams frame-by-frame, skipping frames before `start_time` and breaking early past `end_time`. `read_tail` already used a ring buffer (fixed earlier in 1.3).
 
-### 3.3 `search` reads all frames into memory (src/storage/logfile.rs:170)
-Even for `max_matches = 1`, the entire file is read into a `Vec<Frame>` first. A streaming approach that reads and matches frame-by-frame would use constant memory.
+### ~~3.3 `search` reads all frames into memory (src/storage/logfile.rs:170)~~ FIXED
+~~Even for `max_matches = 1`, the entire file is read into a `Vec<Frame>` first. A streaming approach that reads and matches frame-by-frame would use constant memory.~~
+**Fixed on master** (commit `18303d5`). `search` now streams frame-by-frame, stops at `max_matches` without loading the entire file.
 
 ### 3.4 Combined log is redundant storage
 Every frame is written to both a stream-specific file and `combined.log`, doubling disk usage. The combined view could be reconstructed by merge-sorting the three stream files by timestamp, trading CPU at read time for 50% storage savings.
@@ -249,7 +252,7 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 |----------|----------|-------|-------|-------|
 | Logic Errors | 0 | 0 | 2 (1.4, 1.6) | ~~1.1~~, ~~1.2~~, ~~1.3~~, ~~1.5~~, ~~1.7~~, ~~1.8~~, ~~1.9~~, ~~1.10~~, ~~1.11~~ |
 | Maintainability | 0 | 0 | 2 (2.4, 2.10) | ~~2.1~~, ~~2.2~~, ~~2.3~~, ~~2.5~~, ~~2.6~~, ~~2.7~~, ~~2.8~~, ~~2.9~~ |
-| Optimizations | 0 | 3 (3.1, 3.2, 3.3) | 1 (3.4) | ~~3.5~~, ~~3.6~~, ~~3.7~~, ~~3.8~~ |
+| Optimizations | 0 | 0 | 1 (3.4) | ~~3.1~~, ~~3.2~~, ~~3.3~~, ~~3.5~~, ~~3.6~~, ~~3.7~~, ~~3.8~~ |
 | UX | 0 | 1 (4.11) | 2 (4.3, 4.6) | ~~4.1~~, ~~4.2~~, ~~4.4~~, ~~4.5~~, ~~4.7~~, ~~4.8~~, ~~4.9~~, ~~4.10~~, ~~4.12~~ |
 | Documentation | 0 | 1 (5.2) | 2 (5.5, 5.6) | ~~5.1~~, ~~5.3~~, ~~5.4~~, ~~5.7~~, ~~5.8~~ |
 | Security | 0 | 1 (6.6) | 6 | ~~6.1~~, ~~6.2~~ |
@@ -289,6 +292,9 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 30. ~~Completion summary (4.5)~~ -- DONE
 31. ~~Terminal colours (4.8)~~ -- DONE
 32. ~~Development artifacts removed (5.8)~~ -- DONE
+33. ~~BufReader for log I/O (3.1)~~ -- DONE
+34. ~~Streaming read_range (3.2)~~ -- DONE
+35. ~~Streaming search (3.3)~~ -- DONE
 
 ---
 

@@ -83,7 +83,7 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
                     "[{}] [{}] [{}] {}",
                     service_name,
                     m.stream_type.as_str(),
-                    dt.format("%H:%M:%S"),
+                    dt.format("%H:%M:%S UTC"),
                     m.line
                 ));
                 total_log_matches += 1;

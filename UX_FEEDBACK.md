@@ -47,3 +47,12 @@ Context: Tested wrapping Claude Code with brainlog (`brainlog run --name "claude
 ## Process Control
 
 13. **Kill a running process** — `brainlog kill <name|id>` to send SIGTERM (or SIGKILL with `--force`) to a process being monitored by brainlog. Useful for killing stuck processes or using brainlog as a central service control plane. Should also be exposed as an MCP tool so agents can stop services programmatically.
+
+## colours
+14. would be nice to add colours to the terminal output. like for --resume flag, list table etc etc
+
+## wait_for_pattern matches stale logs (2026-02-25)
+
+Context: Agent used `wait_for_pattern` to watch for new log activity after triggering an action. The tool returned immediately (0ms elapsed) matching old/buffered log lines instead of waiting for fresh output.
+
+15. **`wait_for_pattern` needs a `since` parameter** — Currently the first poll reads ALL existing frames (since `last_seen_ts` starts at 0), so it always matches against the full log history. A `since` param (nanoseconds since epoch, like `search_logs` has `start_time`) would let callers say "only match lines from now onwards." This is the most common use case for agents: trigger an action, then `wait_for_pattern(since=now)` to confirm it happened. Workaround today is `search_logs` with `start_time` in a manual polling loop, which defeats the purpose.

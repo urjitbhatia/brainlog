@@ -160,6 +160,10 @@ pub struct WaitForPatternParams {
     pub poll_interval_ms: Option<u64>,
     /// Strip ANSI escape codes before matching (default: true)
     pub strip_ansi: Option<bool>,
+    /// Only match log lines with timestamps >= this value (nanoseconds since epoch).
+    /// Defaults to the current time, so only new lines are matched.
+    /// Set to 0 to match against the full log history.
+    pub since: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

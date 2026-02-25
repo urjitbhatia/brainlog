@@ -354,17 +354,15 @@ pub async fn wait_for_pattern(
     let timeout_dur = std::time::Duration::from_secs(timeout_secs);
     let poll_dur = std::time::Duration::from_millis(poll_interval_ms);
 
-    // Track the last-seen timestamp so we only scan new frames each iteration.
-    let mut last_seen_ts: u64 = 0;
+    // Default to "now" so we only match new lines, unless caller explicitly
+    // passes since=0 to search the full history.
+    let since = params.since.unwrap_or_else(crate::process::capture::now_ns);
+    let mut last_seen_ts: u64 = since;
 
     loop {
         // Read frames newer than what we have already checked.
         // read_range uses >=, so we add 1 to skip already-seen frames.
-        let start_time = if last_seen_ts == 0 {
-            None
-        } else {
-            Some(last_seen_ts + 1)
-        };
+        let start_time = Some(last_seen_ts + 1);
         let frames = reader.read_range(start_time, None)?;
 
         for frame in &frames {
@@ -1177,6 +1175,7 @@ mod tests {
             timeout: Some(2),
             poll_interval_ms: Some(100),
             strip_ansi: None,
+            since: Some(0), // search full history
         };
         let resp = test_wait_for_pattern(&db, params).await.unwrap();
         assert!(resp.matched);
@@ -1195,6 +1194,7 @@ mod tests {
             timeout: Some(1),
             poll_interval_ms: Some(200),
             strip_ansi: None,
+            since: Some(0), // search full history
         };
         let resp = test_wait_for_pattern(&db, params).await.unwrap();
         assert!(!resp.matched);
@@ -1214,6 +1214,7 @@ mod tests {
             timeout: Some(2),
             poll_interval_ms: Some(100),
             strip_ansi: None,
+            since: Some(0), // search full history
         };
         let resp = test_wait_for_pattern(&db, params).await.unwrap();
         assert!(resp.matched);
@@ -1230,6 +1231,7 @@ mod tests {
             timeout: Some(1),
             poll_interval_ms: Some(200),
             strip_ansi: None,
+            since: Some(0), // search full history — ERROR is on stdout, so stderr filter should miss it
         };
         let resp = test_wait_for_pattern(&db, params).await.unwrap();
         assert!(!resp.matched);
@@ -1262,6 +1264,7 @@ mod tests {
             timeout: Some(2),
             poll_interval_ms: Some(100),
             strip_ansi: Some(true),
+            since: Some(0), // search full history
         };
         let resp = wait_for_pattern(&log_dir_str, params).await.unwrap();
         assert!(resp.matched);
@@ -1296,6 +1299,7 @@ mod tests {
             timeout: Some(1),
             poll_interval_ms: Some(200),
             strip_ansi: Some(false),
+            since: Some(0), // search full history — ^ERROR won't match ANSI-prefixed line
         };
         let resp = wait_for_pattern(&log_dir_str, params).await.unwrap();
         assert!(!resp.matched);
@@ -1312,6 +1316,7 @@ mod tests {
             timeout: Some(2),
             poll_interval_ms: Some(100),
             strip_ansi: None,
+            since: Some(0), // search full history
         };
         let resp = test_wait_for_pattern(&db, params).await.unwrap();
         assert!(resp.matched);
@@ -1329,6 +1334,7 @@ mod tests {
             timeout: Some(1),
             poll_interval_ms: Some(100),
             strip_ansi: None,
+            since: None,
         };
         let result = wait_for_pattern(&log_dir_str, params).await;
         assert!(result.is_err());
@@ -1344,6 +1350,7 @@ mod tests {
             timeout: Some(1),
             poll_interval_ms: Some(100),
             strip_ansi: None,
+            since: None,
         };
         let result = wait_for_pattern_resolve(&db, &params);
         assert!(result.is_err());

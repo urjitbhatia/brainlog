@@ -40,13 +40,13 @@
 
 ---
 
+6. **[DONE] Port detection** — Implemented via `lsof` + `pgrep` on macOS with 2-second polling across the full process tree. Stores detected ports in SQLite, exposed via MCP `discover_services` with port filtering. Earlier reports of missed ports (#10) were likely timing issues, not a fundamental gap.
+
+---
+
 ## Open
 
 4. **Allow users to delete/cleanup old commands** — `brainlog purge --before` exists but could be more granular (e.g., purge by name pattern, interactive selection).
-
-6. **Auto port detection based on file descriptors** — Port detection works for some cases (found Claude Code's internal ports) but missed a web server on port 5174 that was visible in its own logs. Needs investigation.
-
-10. **Port detection missed the web UI** — Related to #6. Web server listening on port 5174 showed empty `ports` array. May need log-based port detection as a fallback.
 
 ---
 

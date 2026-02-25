@@ -202,6 +202,23 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     };
     db.update_run_status(&run_id, &status, Some(exit_code))?;
 
+    // Print completion summary to stderr
+    let short_id = &run_id[..8.min(run_id.len())];
+    if exit_code == 0 {
+        eprintln!(
+            "[brainlog] Run {} completed (exit 0), logs at {}",
+            short_id,
+            log_dir.display()
+        );
+    } else {
+        eprintln!(
+            "[brainlog] Run {} failed (exit {}), logs at {}",
+            short_id,
+            exit_code,
+            log_dir.display()
+        );
+    }
+
     // Print resume hint to stderr
     let svc_name = if let Some(name) = effective_name {
         name

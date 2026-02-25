@@ -5,7 +5,7 @@ use crate::storage::models::{LogMode, StreamFilter};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiscoverServicesParams {
-    /// Filter by service name (substring match)
+    /// Filter by command name (substring match)
     pub name: Option<String>,
     /// Filter by tags in "key:value" format
     pub tags: Option<Vec<String>>,
@@ -21,9 +21,9 @@ pub struct DiscoverServicesParams {
     pub query: Option<String>,
     /// Maximum number of results (default 20)
     pub limit: Option<usize>,
-    /// Group services by executable and working directory, showing only the latest run per group. Defaults to true.
+    /// Group commands by executable and working directory, showing only the latest run per group. Defaults to true.
     pub group: Option<bool>,
-    /// Include a preview of the last N log lines from the latest run's combined stream. Omit or set to 0 to skip.
+    /// Include a preview of the last N lines of stdout/stderr output from the latest run. Omit or set to 0 to skip.
     pub tail_lines: Option<usize>,
 }
 
@@ -84,9 +84,9 @@ pub struct RunInfo {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetLogsParams {
-    /// Service ID or run ID
+    /// Command name, command ID, or run ID (prefix match supported)
     pub id: String,
-    /// Stream to read: stdout, stderr, stdin, combined (default: combined)
+    /// Which output stream to read: stdout, stderr, stdin, combined (default: combined)
     pub stream: Option<StreamFilter>,
     /// Read mode: head, tail, range (default: tail)
     pub mode: Option<LogMode>,
@@ -98,11 +98,11 @@ pub struct GetLogsParams {
     pub end_time: Option<u64>,
     /// Maximum bytes to return (default: 51200)
     pub max_bytes: Option<usize>,
-    /// Strip ANSI escape codes from log output. Useful for programmatic consumers. Defaults to true.
+    /// Strip ANSI escape codes from output. Useful for programmatic consumers. Defaults to true.
     pub strip_ansi: Option<bool>,
-    /// Only return log frames with timestamps >= this value (nanoseconds since epoch).
+    /// Only return output with timestamps >= this value (nanoseconds since epoch).
     /// Useful for incremental polling — pass the timestamp of the last frame you received
-    /// to get only newer frames. Omit to get all frames matching the mode/lines criteria.
+    /// to get only newer output. Omit to get all output matching the mode/lines criteria.
     pub since: Option<u64>,
 }
 
@@ -116,11 +116,11 @@ pub struct GetLogsResponse {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchLogsParams {
-    /// Regex pattern to search for
+    /// Regex pattern to search for in command output
     pub pattern: String,
-    /// Filter by service ID
+    /// Filter by command ID (to search a specific command's output)
     pub service_id: Option<String>,
-    /// Stream to search: stdout, stderr, stdin, combined (default: combined)
+    /// Which output stream to search: stdout, stderr, stdin, combined (default: combined)
     pub stream: Option<StreamFilter>,
     /// Start time filter (ns since epoch)
     pub start_time: Option<u64>,
@@ -130,7 +130,7 @@ pub struct SearchLogsParams {
     pub context_lines: Option<usize>,
     /// Maximum number of matches (default: 50)
     pub max_matches: Option<usize>,
-    /// Strip ANSI escape codes from log output. Useful for programmatic consumers. Defaults to true.
+    /// Strip ANSI escape codes from output. Useful for programmatic consumers. Defaults to true.
     pub strip_ansi: Option<bool>,
 }
 
@@ -152,11 +152,11 @@ pub struct SearchMatch {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WaitForPatternParams {
-    /// Service ID, service name, or run ID
+    /// Command name, command ID, or run ID
     pub id: String,
-    /// Regex pattern to match against log lines
+    /// Regex pattern to match against stdout/stderr output lines
     pub pattern: String,
-    /// Which stream to watch: stdout, stderr, stdin, combined (default: combined)
+    /// Which output stream to watch: stdout, stderr, stdin, combined (default: combined)
     pub stream: Option<StreamFilter>,
     /// Timeout in seconds (default: 30)
     pub timeout: Option<u64>,
@@ -164,9 +164,9 @@ pub struct WaitForPatternParams {
     pub poll_interval_ms: Option<u64>,
     /// Strip ANSI escape codes before matching (default: true)
     pub strip_ansi: Option<bool>,
-    /// Only match log lines with timestamps >= this value (nanoseconds since epoch).
-    /// Defaults to the current time, so only new lines are matched.
-    /// Set to 0 to match against the full log history.
+    /// Only match output lines with timestamps >= this value (nanoseconds since epoch).
+    /// Defaults to the current time, so only new output is matched.
+    /// Set to 0 to match against the full output history.
     pub since: Option<u64>,
 }
 

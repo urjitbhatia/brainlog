@@ -100,6 +100,10 @@ pub struct GetLogsParams {
     pub max_bytes: Option<usize>,
     /// Strip ANSI escape codes from log output. Useful for programmatic consumers. Defaults to true.
     pub strip_ansi: Option<bool>,
+    /// Only return log frames with timestamps >= this value (nanoseconds since epoch).
+    /// Useful for incremental polling — pass the timestamp of the last frame you received
+    /// to get only newer frames. Omit to get all frames matching the mode/lines criteria.
+    pub since: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

@@ -240,10 +240,26 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
     let log_dir = db.resolve_log_dir(&params.id)?;
     let reader = LogReader::new(Path::new(&log_dir), stream);
 
-    let frames = match mode {
-        LogMode::Head => reader.read_head(lines)?,
-        LogMode::Range => reader.read_range(params.start_time, params.end_time)?,
-        LogMode::Tail => reader.read_tail(lines)?,
+    let frames = match (mode, params.since) {
+        // When `since` is provided, read only frames with timestamp >= since,
+        // then apply head/tail/range semantics on top of that subset.
+        (LogMode::Head, Some(since)) => {
+            let ranged = reader.read_range(Some(since), None)?;
+            ranged.into_iter().take(lines).collect()
+        }
+        (LogMode::Tail, Some(since)) => {
+            let ranged = reader.read_range(Some(since), None)?;
+            let skip = ranged.len().saturating_sub(lines);
+            ranged.into_iter().skip(skip).collect()
+        }
+        (LogMode::Range, Some(since)) => {
+            let effective_start = Some(std::cmp::max(since, params.start_time.unwrap_or(0)));
+            reader.read_range(effective_start, params.end_time)?
+        }
+        // No `since` — original behavior
+        (LogMode::Head, None) => reader.read_head(lines)?,
+        (LogMode::Range, None) => reader.read_range(params.start_time, params.end_time)?,
+        (LogMode::Tail, None) => reader.read_tail(lines)?,
     };
 
     let frame_count = frames.len();
@@ -715,6 +731,7 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: None,
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.stream, "combined");
@@ -736,6 +753,7 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: None,
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.stream, "stdout");
@@ -757,6 +775,7 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: None,
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.frame_count, 1);
@@ -775,6 +794,7 @@ mod tests {
             end_time: None,
             max_bytes: Some(20),
             strip_ansi: None,
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert!(resp.has_more, "should indicate truncation");
@@ -793,11 +813,140 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: None,
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert_eq!(resp.stream, "stderr");
         assert_eq!(resp.frame_count, 1);
         assert!(resp.content.contains("deprecated API"));
+    }
+
+    // ── get_logs since ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_logs_since_filters_old_frames_head_mode() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // Frames have timestamps 1e9, 2e9, 3e9, 4e9.
+        // Setting since=3_000_000_000 should only return frames at 3e9 and 4e9.
+        let params = GetLogsParams {
+            id: "test-web".to_string(),
+            stream: None,
+            mode: Some(LogMode::Head),
+            lines: Some(100),
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: None,
+            since: Some(3_000_000_000),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert_eq!(resp.frame_count, 2);
+        assert!(resp.content.contains("ERROR: connection refused"));
+        assert!(resp.content.contains("retrying"));
+        assert!(!resp.content.contains("server started"));
+        assert!(!resp.content.contains("deprecated API"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_since_head_mode_limits_lines() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // since=2e9 gives frames at 2e9, 3e9, 4e9 (3 frames).
+        // Head with lines=1 should only return the first of those.
+        let params = GetLogsParams {
+            id: "test-web".to_string(),
+            stream: None,
+            mode: Some(LogMode::Head),
+            lines: Some(1),
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: None,
+            since: Some(2_000_000_000),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert_eq!(resp.frame_count, 1);
+        assert!(resp.content.contains("deprecated API"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_since_tail_mode() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // since=2e9 gives frames at 2e9, 3e9, 4e9 (3 frames).
+        // Tail with lines=1 should only return the last of those.
+        let params = GetLogsParams {
+            id: "test-web".to_string(),
+            stream: None,
+            mode: Some(LogMode::Tail),
+            lines: Some(1),
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: None,
+            since: Some(2_000_000_000),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert_eq!(resp.frame_count, 1);
+        assert!(resp.content.contains("retrying"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_since_range_mode() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // range start_time=1e9 but since=3e9 => effective start = max(3e9, 1e9) = 3e9
+        let params = GetLogsParams {
+            id: "test-web".to_string(),
+            stream: None,
+            mode: Some(LogMode::Range),
+            lines: None,
+            start_time: Some(1_000_000_000),
+            end_time: Some(4_000_000_000),
+            max_bytes: None,
+            strip_ansi: None,
+            since: Some(3_000_000_000),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert_eq!(resp.frame_count, 2);
+        assert!(resp.content.contains("ERROR: connection refused"));
+        assert!(resp.content.contains("retrying"));
+        assert!(!resp.content.contains("server started"));
+    }
+
+    #[tokio::test]
+    async fn get_logs_since_none_returns_all() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // Without since, all 4 frames should be returned
+        let params = GetLogsParams {
+            id: "test-web".to_string(),
+            stream: None,
+            mode: Some(LogMode::Head),
+            lines: Some(100),
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: None,
+            since: None,
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert_eq!(resp.frame_count, 4);
+    }
+
+    #[tokio::test]
+    async fn get_logs_since_future_returns_nothing() {
+        let (db, _, _, _dir) = setup_test_env().await;
+        // since far in the future should return no frames
+        let params = GetLogsParams {
+            id: "test-web".to_string(),
+            stream: None,
+            mode: Some(LogMode::Head),
+            lines: Some(100),
+            start_time: None,
+            end_time: None,
+            max_bytes: None,
+            strip_ansi: None,
+            since: Some(999_000_000_000),
+        };
+        let resp = get_logs(&db, params).unwrap();
+        assert_eq!(resp.frame_count, 0);
     }
 
     // ── search_logs ──────────────────────────────────────────────────
@@ -1035,6 +1184,7 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: Some(true),
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert!(
@@ -1062,6 +1212,7 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: Some(false),
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert!(
@@ -1082,6 +1233,7 @@ mod tests {
             end_time: None,
             max_bytes: None,
             strip_ansi: None,
+            since: None,
         };
         let resp = get_logs(&db, params).unwrap();
         assert!(

@@ -2,10 +2,12 @@ use anyhow::Result;
 use chrono::Utc;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
+use owo_colors::OwoColorize;
 use signal_hook::consts::SIGUSR1;
 use signal_hook_tokio::Signals;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -34,6 +36,12 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     let effective_name: Option<String>;
     let resumed_from: Option<String>; // old service id if resuming
 
+    // Check for BRAINLOG_SERVICE_NAME env var as fallback for --name
+    let env_name = std::env::var("BRAINLOG_SERVICE_NAME")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let resolved_name = resolve_name(args.name.clone(), env_name);
+
     // Handle --resume: supersede old service, create new one with same name
     let service_id = if let Some(ref resume_name) = args.resume {
         let old_service = db.supersede_service(resume_name)?;
@@ -51,13 +59,13 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
         // Create a new service with the resume name
         create_service_with_name(&db, &config, resume_name, &args, &executable, &working_dir)?
-    } else if let Some(ref name) = args.name {
+    } else if let Some(ref name) = resolved_name {
         effective_name = Some(name.clone());
         resumed_from = None;
         if let Some(existing) = db.find_service_by_name(name)? {
             existing.id
         } else {
-            create_service(&db, &config, &args, &executable, &working_dir)?
+            create_service_with_name(&db, &config, name, &args, &executable, &working_dir)?
         }
     } else {
         effective_name = None;
@@ -180,7 +188,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         let run_id_bg = run_id.clone();
         let service_id_bg = service_id.clone();
         let command_bg = args.command.clone();
-        let has_user_name = args.name.is_some() || args.resume.is_some();
+        let has_user_name = resolved_name.is_some() || args.resume.is_some();
         let port_cancel_bg = port_cancel.clone();
         let child_pid_ref_bg = current_child_pid.clone();
         let config_bg = config.clone();
@@ -237,10 +245,24 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         });
 
         // Print startup indicator
+        let stderr_tty = std::io::stderr().is_terminal();
         if iteration == 1 {
+            if stderr_tty {
+                eprintln!(
+                    "[brainlog] Capturing output for `{}`",
+                    args.command.join(" ").bold()
+                );
+            } else {
+                eprintln!(
+                    "[brainlog] Capturing output for `{}`",
+                    args.command.join(" ")
+                );
+            }
+        } else if stderr_tty {
             eprintln!(
-                "[brainlog] Capturing output for `{}`",
-                args.command.join(" ")
+                "[brainlog] Restarting `{}` (iteration {})",
+                args.command.join(" ").bold(),
+                iteration
             );
         } else {
             eprintln!(
@@ -248,6 +270,23 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
                 args.command.join(" "),
                 iteration
             );
+        }
+
+        // Set BRAINLOG_SERVICE_NAME in the environment so child processes inherit it.
+        // This allows nested brainlog invocations or scripts to detect they're running
+        // under brainlog. We resolve the name from effective_name (user-provided or env var)
+        // or fall back to reading it from the DB (derived name case).
+        if iteration == 1 {
+            let child_env_name = if let Some(ref name) = effective_name {
+                name.clone()
+            } else {
+                db.get_service(&service_id)?
+                    .and_then(|s| s.name)
+                    .unwrap_or_default()
+            };
+            if !child_env_name.is_empty() {
+                std::env::set_var("BRAINLOG_SERVICE_NAME", &child_env_name);
+            }
         }
 
         // Spawn the wrapped process
@@ -289,7 +328,24 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
         // Print completion summary
         let short_id = &run_id[..8.min(run_id.len())];
-        if exit_code == 0 {
+        if stderr_tty {
+            if exit_code == 0 {
+                eprintln!(
+                    "[brainlog] Run {} {} (exit 0), logs at {}",
+                    short_id,
+                    "completed".green().bold(),
+                    log_dir.display().to_string().dimmed()
+                );
+            } else {
+                eprintln!(
+                    "[brainlog] Run {} {} (exit {}), logs at {}",
+                    short_id,
+                    "failed".red().bold(),
+                    exit_code,
+                    log_dir.display().to_string().dimmed()
+                );
+            }
+        } else if exit_code == 0 {
             eprintln!(
                 "[brainlog] Run {} completed (exit 0), logs at {}",
                 short_id,
@@ -448,8 +504,28 @@ fn print_resume_hint(name: &str, command: &[String], user_provided_name: bool) {
         .map(|s| shell_quote(s))
         .collect::<Vec<_>>()
         .join(" ");
+    let tty = std::io::stderr().is_terminal();
     eprintln!();
-    if user_provided_name {
+    if tty {
+        let label = "To resume under the same name, run:".dimmed();
+        if user_provided_name {
+            eprintln!(
+                "{}\n  {} {} {}",
+                label,
+                "brainlog -n".cyan(),
+                shell_quote(name).bold(),
+                cmd_str.bold(),
+            );
+        } else {
+            eprintln!(
+                "{}\n  {} {} {}",
+                label,
+                "brainlog --resume".cyan(),
+                shell_quote(name).bold(),
+                cmd_str.bold(),
+            );
+        }
+    } else if user_provided_name {
         eprintln!(
             "To resume under the same name, run:\n  brainlog -n {} {}",
             shell_quote(name),
@@ -476,6 +552,14 @@ fn shell_quote(s: &str) -> String {
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
     }
+}
+
+/// Resolve the service name from CLI flag and env var.
+///
+/// Priority: `--name` flag > `BRAINLOG_SERVICE_NAME` env var > None (caller falls through
+/// to `--resume` or derived name).
+fn resolve_name(cli_name: Option<String>, env_name: Option<String>) -> Option<String> {
+    cli_name.or(env_name)
 }
 
 /// Derive a compact service name: `<cwd_basename>/<executable>-<hash>`.
@@ -614,5 +698,31 @@ mod tests {
         let msg = format_exit_message(159); // 128 + 31
         assert!(msg.contains("unknown"));
         assert!(msg.contains("signal 31"));
+    }
+
+    // --- resolve_name tests ---
+
+    #[test]
+    fn resolve_name_cli_flag_takes_priority_over_env() {
+        let result = resolve_name(Some("from-cli".to_string()), Some("from-env".to_string()));
+        assert_eq!(result.as_deref(), Some("from-cli"));
+    }
+
+    #[test]
+    fn resolve_name_falls_back_to_env_var() {
+        let result = resolve_name(None, Some("from-env".to_string()));
+        assert_eq!(result.as_deref(), Some("from-env"));
+    }
+
+    #[test]
+    fn resolve_name_returns_none_when_both_absent() {
+        let result = resolve_name(None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_name_cli_flag_only() {
+        let result = resolve_name(Some("my-service".to_string()), None);
+        assert_eq!(result.as_deref(), Some("my-service"));
     }
 }

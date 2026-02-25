@@ -1,6 +1,8 @@
 use anyhow::{bail, Result};
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
+use owo_colors::OwoColorize;
+use std::io::IsTerminal;
 
 use crate::cli::KillArgs;
 use crate::config::Config;
@@ -66,8 +68,28 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
     }
 
     let signal_name = format!("{}", signal);
+    let tty = std::io::stdout().is_terminal();
     if kill_order.len() == 1 {
-        println!("Sent {} to '{}' (PID {})", signal_name, service_name, pid);
+        if tty {
+            println!(
+                "{} Sent {} to '{}' (PID {})",
+                "ok".green(),
+                signal_name,
+                service_name.bold(),
+                pid
+            );
+        } else {
+            println!("Sent {} to '{}' (PID {})", signal_name, service_name, pid);
+        }
+    } else if tty {
+        println!(
+            "{} Sent {} to '{}' (PID {} + {} child processes)",
+            "ok".green(),
+            signal_name,
+            service_name.bold(),
+            pid,
+            kill_order.len() - 1
+        );
     } else {
         println!(
             "Sent {} to '{}' (PID {} + {} child processes)",

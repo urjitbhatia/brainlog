@@ -1,10 +1,37 @@
 use anyhow::Result;
+use owo_colors::OwoColorize;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::cli::ListArgs;
 use crate::config::Config;
 use crate::storage::logfile::log_sizes;
 use crate::storage::Database;
+
+/// Whether stdout is a terminal (cached once per call).
+fn stdout_is_tty() -> bool {
+    std::io::stdout().is_terminal()
+}
+
+/// Whether stderr is a terminal (cached once per call).
+fn stderr_is_tty() -> bool {
+    std::io::stderr().is_terminal()
+}
+
+/// Colour a status string based on its value, only when outputting to a TTY.
+/// The input may be padded (e.g. "running     "); we match on the trimmed value
+/// but colour the full (padded) string to preserve column alignment.
+fn colour_status(status: &str, is_tty: bool) -> String {
+    if !is_tty {
+        return status.to_string();
+    }
+    match status.trim() {
+        "running" => format!("{}", status.green()),
+        "completed" => format!("{}", status.yellow()),
+        "failed" => format!("{}", status.red()),
+        _ => format!("{}", status.dimmed()),
+    }
+}
 
 fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
@@ -113,18 +140,31 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     let name_max = (available * 2 / 5).max(10);
     let cmd_max = available.saturating_sub(name_max).max(10);
 
-    println!(
-        "{:<8}  {:<nw$}  {:<12}  {:<20}  COMMAND",
-        "ID",
-        "NAME",
-        "STATUS",
-        "CREATED",
-        nw = name_max
-    );
+    let tty = stdout_is_tty();
+    if tty {
+        println!(
+            "{:<8}  {:<nw$}  {:<12}  {:<20}  {}",
+            "ID".bold(),
+            format!("{:<nw$}", "NAME", nw = name_max).bold(),
+            "STATUS".bold(),
+            "CREATED".bold(),
+            "COMMAND".bold(),
+            nw = name_max
+        );
+    } else {
+        println!(
+            "{:<8}  {:<nw$}  {:<12}  {:<20}  COMMAND",
+            "ID",
+            "NAME",
+            "STATUS",
+            "CREATED",
+            nw = name_max
+        );
+    }
 
     for service in &services {
         let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
-        let status = if let Some(run) = db.get_latest_run(&service.id)? {
+        let status_raw = if let Some(run) = db.get_latest_run(&service.id)? {
             run.status.as_str().to_string()
         } else {
             "no runs".to_string()
@@ -132,11 +172,16 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         let created = service.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
         let cmd = service.command_line.join(" ");
 
+        // The coloured status string may contain ANSI escapes, so we pad the raw
+        // string to the column width first, then colourise that padded string.
+        let status_padded = format!("{:<12}", status_raw);
+        let status_display = colour_status(&status_padded, tty);
+
         println!(
-            "{:<8}  {:<nw$}  {:<12}  {:<20}  {}",
+            "{:<8}  {:<nw$}  {}  {:<20}  {}",
             &service.id[..8],
             truncate(name_display, name_max),
-            status,
+            status_display,
             created,
             truncate(&cmd, cmd_max),
             nw = name_max
@@ -144,7 +189,14 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     }
 
     eprintln!();
-    eprintln!("Tip: resume a service with: brainlog --resume <name> <command>");
+    if stderr_is_tty() {
+        eprintln!(
+            "{}",
+            "Tip: resume a service with: brainlog --resume <name> <command>".dimmed()
+        );
+    } else {
+        eprintln!("Tip: resume a service with: brainlog --resume <name> <command>");
+    }
 
     Ok(())
 }
@@ -159,6 +211,8 @@ fn shorten_home(path: &str) -> String {
 }
 
 fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
+    let tty = stdout_is_tty();
+
     let groups = db.list_services_grouped()?;
 
     let groups: Vec<_> = if let Some(ref name_filter) = args.name {
@@ -190,7 +244,7 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
             .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
             .unwrap_or_else(|| "never".to_string());
 
-        let latest_status = group
+        let latest_status_raw = group
             .latest_run_status
             .as_ref()
             .map(|s| s.as_str())
@@ -198,10 +252,22 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
 
         let dir = shorten_home(&group.working_dir);
 
-        println!(
-            "[ {} ] in {}  ({} runs, latest: {} {})",
-            group.executable, dir, group.run_count, latest_status, latest_ts
-        );
+        if tty {
+            let status_display = colour_status(latest_status_raw, true);
+            println!(
+                "[ {} ] in {}  ({} runs, latest: {} {})",
+                group.executable.bold(),
+                dir.dimmed(),
+                group.run_count,
+                status_display,
+                latest_ts
+            );
+        } else {
+            println!(
+                "[ {} ] in {}  ({} runs, latest: {} {})",
+                group.executable, dir, group.run_count, latest_status_raw, latest_ts
+            );
+        }
 
         let mut commands: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for svc in &group.services {
@@ -214,16 +280,18 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
         if args.verbose {
             for svc in &group.services {
                 let name = svc.name.as_deref().unwrap_or("-");
-                let status = if let Some(run) = db.get_latest_run(&svc.id)? {
+                let status_raw = if let Some(run) = db.get_latest_run(&svc.id)? {
                     run.status.as_str().to_string()
                 } else {
                     "no runs".to_string()
                 };
+                let status_padded = format!("{:<12}", status_raw);
+                let status_display = colour_status(&status_padded, tty);
                 println!(
-                    "    {} {:<20} {:<12} {}",
+                    "    {} {:<20} {} {}",
                     &svc.id[..8],
                     name,
-                    status,
+                    status_display,
                     svc.command_line.join(" ")
                 );
             }

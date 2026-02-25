@@ -44,9 +44,13 @@
 
 ---
 
+4. **[DONE] Granular purge** — `brainlog purge --before 7d --name <substr> --command <substr>` with `--dry-run` and `--force`. Filters by service name and/or command substring. Coloured output with TTY detection.
+
+---
+
 ## Open
 
-4. **Allow users to delete/cleanup old commands** — `brainlog purge --before` exists but could be more granular (e.g., purge by name pattern, interactive selection).
+No open UX feedback items.
 
 ---
 

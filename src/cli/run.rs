@@ -330,6 +330,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
     // Abort the SIGUSR1 listener
     sigusr1_handle.abort();
+    let _ = sigusr1_handle.await;
 
     // Print resume hint
     let svc_name = if let Some(name) = effective_name {

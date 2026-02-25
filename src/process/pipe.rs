@@ -61,6 +61,7 @@ pub async fn spawn_piped(
 
     let status = child.wait().await?;
     signal_handle.abort();
+    let _ = signal_handle.await;
 
     // Wait for I/O to drain
     if let Err(e) = stdout_handle.await {

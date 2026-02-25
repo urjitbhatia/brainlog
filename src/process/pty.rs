@@ -211,9 +211,9 @@ async fn run_pty_pump(master: OwnedFd, child: Pid, tx: mpsc::Sender<Frame>) -> R
     done.store(true, Ordering::Relaxed);
 
     signal_handle.abort();
-    // Give I/O time to drain
-    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    let _ = signal_handle.await;
     read_handle.abort();
+    let _ = read_handle.await;
     // write_handle should exit on its own due to the done flag, but give it a moment
     match tokio::time::timeout(tokio::time::Duration::from_millis(200), write_handle).await {
         Ok(Err(e)) => tracing::warn!("PTY stdin writer task failed: {e}"),

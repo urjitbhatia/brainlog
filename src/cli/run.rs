@@ -160,6 +160,12 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         }
     });
 
+    // Print startup indicator
+    eprintln!(
+        "[brainlog] Capturing output for `{}`",
+        args.command.join(" ")
+    );
+
     // Spawn the wrapped process — PID is sent via pid_tx immediately after fork/spawn
     let spawn_result = process::spawn_wrapped(&args.command, tx.clone(), pid_tx).await?;
 

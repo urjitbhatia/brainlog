@@ -140,7 +140,10 @@ fn resolve_service(
     let prefix_matches = db.find_services_by_id_prefix(target, 3)?;
 
     match prefix_matches.len() {
-        0 => bail!("No service found matching '{}'", target),
+        0 => bail!(
+            "No service found matching '{}'. Use `brainlog list` to see available services.",
+            target
+        ),
         1 => Ok((prefix_matches.into_iter().next().unwrap(), "id_prefix")),
         _ => {
             eprintln!("Multiple services match '{}':", target);

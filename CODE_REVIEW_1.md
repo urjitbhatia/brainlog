@@ -45,18 +45,21 @@ The enrichment task opens a new `Database::open(&config.db_path())` instead of r
 ~~When multiple tag filters are provided, they're joined with `OR`, meaning `--tag env:prod --tag team:backend` matches services with *either* tag, not services that have *both* tags. This is likely the wrong semantic for filtering.~~
 **Fixed in `worktree-agent-a64ff592` branch** (commit `154d1ea`). Replaced JOIN+OR approach with per-tag `EXISTS` subqueries joined by AND. New test `search_services_by_multiple_tags_uses_and` verifies AND semantics.
 
-### 1.11 Partial ID match in `resolve_log_dir` can match wrong service (src/cli/logs.rs:55-62)
-The partial match iterates all services and returns the first one whose ID starts with the given prefix. If multiple services share a prefix, the wrong one may be returned without warning.
+### ~~1.11 Partial ID match in `resolve_log_dir` can match wrong service (src/cli/logs.rs:55-62)~~ FIXED
+~~The partial match iterates all services and returns the first one whose ID starts with the given prefix. If multiple services share a prefix, the wrong one may be returned without warning.~~
+**Fixed on master** (commit `7da4fa0`). `resolve_log_dir` now uses SQL `LIKE` with a limit of 2 — if multiple services match the prefix, it returns an explicit "Ambiguous prefix" error listing the matching IDs.
 
 ---
 
 ## 2. Maintainability Issues
 
-### 2.1 Duplicated `resolve_log_dir` functions
-`src/cli/logs.rs:35-65` and `src/mcp/tools.rs:168-181` contain nearly identical `resolve_log_dir` implementations. The CLI version also does partial ID matching while the MCP version does not — inconsistent behavior.
+### ~~2.1 Duplicated `resolve_log_dir` functions~~ FIXED
+~~`src/cli/logs.rs:35-65` and `src/mcp/tools.rs:168-181` contain nearly identical `resolve_log_dir` implementations. The CLI version also does partial ID matching while the MCP version does not — inconsistent behavior.~~
+**Fixed on master** (commit `68c0b6c`). Consolidated into a `Database::resolve_log_dir()` method.
 
-### 2.2 Hardcoded `KNOWN_SUBCOMMANDS` list (src/cli/mod.rs:105-116)
-This list must be manually updated whenever a new subcommand is added. If a developer adds a subcommand to the `Commands` enum but forgets this list, direct mode will swallow it. There's no compile-time check to keep them in sync.
+### ~~2.2 Hardcoded `KNOWN_SUBCOMMANDS` list (src/cli/mod.rs:105-116)~~ FIXED
+~~This list must be manually updated whenever a new subcommand is added. If a developer adds a subcommand to the `Commands` enum but forgets this list, direct mode will swallow it. There's no compile-time check to keep them in sync.~~
+**Fixed on master** (commit `8a30b90`). Now derived from clap `Commands` enum at compile time.
 
 ### ~~2.3 No schema versioning or migrations (src/storage/schema.rs)~~ FIXED
 ~~The schema uses `CREATE TABLE IF NOT EXISTS` which means columns cannot be added/modified in future versions. There's no version tracking or migration system. Shipping 1.0.0 with this means any schema change in 1.1 will require manual migration tooling.~~
@@ -73,11 +76,13 @@ This list must be manually updated whenever a new subcommand is added. If a deve
 ~~Some places use `let _ = ...` to discard errors (enrichment, signal forwarding, PTY I/O), while the main path uses `anyhow::Result`. The fire-and-forget pattern makes it hard to diagnose failures in production. At minimum, errors should be logged via `tracing`.~~
 **Fixed in `worktree-agent-aea108b2` branch** (commit `64066cd`). Replaced 16 instances of `let _ =` across 7 files with `tracing::warn!`/`tracing::error!` with descriptive messages. Only remaining `let _ =` is for an unused variable on non-macOS.
 
-### 2.7 `row_to_service` / `row_to_service_rusqlite` dual functions (src/storage/db.rs:556-581)
-There are two almost-identical row mapping functions — one returning `anyhow::Result`, the other `rusqlite::Error` — just to satisfy different calling contexts. This is unnecessary indirection.
+### ~~2.7 `row_to_service` / `row_to_service_rusqlite` dual functions (src/storage/db.rs:556-581)~~ FIXED
+~~There are two almost-identical row mapping functions — one returning `anyhow::Result`, the other `rusqlite::Error` — just to satisfy different calling contexts. This is unnecessary indirection.~~
+**Fixed on master** (commit `0dac778`). Removed redundant wrapper functions.
 
-### 2.8 `unwrap_or_default()` on datetime parsing (src/storage/db.rs:573-578)
-If the stored RFC3339 string is malformed, `parse_from_rfc3339` returns the epoch (1970-01-01) silently. This masks data corruption issues.
+### ~~2.8 `unwrap_or_default()` on datetime parsing (src/storage/db.rs:573-578)~~ FIXED
+~~If the stored RFC3339 string is malformed, `parse_from_rfc3339` returns the epoch (1970-01-01) silently. This masks data corruption issues.~~
+**Fixed on master** (commit `40538ef`). Replaced with proper error propagation.
 
 ### ~~2.9 `thiserror` and `base64` are unused dependencies (Cargo.toml:24,29)~~ FIXED
 ~~`thiserror = "2"` is declared but no custom error types use `#[derive(Error)]`. `base64 = "0.22"` is declared but never used anywhere in the codebase. Dead dependencies increase compile times.~~
@@ -102,27 +107,33 @@ Even for `max_matches = 1`, the entire file is read into a `Vec<Frame>` first. A
 ### 3.4 Combined log is redundant storage
 Every frame is written to both a stream-specific file and `combined.log`, doubling disk usage. The combined view could be reconstructed by merge-sorting the three stream files by timestamp, trading CPU at read time for 50% storage savings.
 
-### 3.5 `list_services` in `resolve_log_dir` loads all services for partial match (src/cli/logs.rs:55)
-A SQL `WHERE id LIKE ?1 || '%'` query would be far more efficient than loading all services and filtering in Rust.
+### ~~3.5 `list_services` in `resolve_log_dir` loads all services for partial match (src/cli/logs.rs:55)~~ FIXED
+~~A SQL `WHERE id LIKE ?1 || '%'` query would be far more efficient than loading all services and filtering in Rust.~~
+**Fixed on master** (commit `7da4fa0`). Replaced with SQL `LIKE` query.
 
-### 3.6 `reqwest::Client` is reconstructed per LLM call (src/llm/openai.rs:62-64)
-Each `complete()` call builds a new `reqwest::Client`. The client should be constructed once and reused, as it manages a connection pool internally.
+### ~~3.6 `reqwest::Client` is reconstructed per LLM call (src/llm/openai.rs:62-64)~~ FIXED
+~~Each `complete()` call builds a new `reqwest::Client`. The client should be constructed once and reused, as it manages a connection pool internally.~~
+**Fixed on master** (commit `7afde24`). Client is now reused across LLM calls.
 
-### 3.7 `serde_json::to_string_pretty` in MCP responses (src/mcp/mod.rs:54,72,90)
-Pretty-printing JSON for machine-to-machine MCP communication adds unnecessary whitespace. `to_string` would be more efficient.
+### ~~3.7 `serde_json::to_string_pretty` in MCP responses (src/mcp/mod.rs:54,72,90)~~ FIXED
+~~Pretty-printing JSON for machine-to-machine MCP communication adds unnecessary whitespace. `to_string` would be more efficient.~~
+**Fixed on master** (commit `f652d67`). Uses compact JSON serialization.
 
-### 3.8 Unnecessary cloning in `handle_run` (src/cli/run.rs:88-93)
-Multiple values are cloned to move into the enrichment tokio::spawn closure: `service_id_enrich`, `config_enrich`, `working_dir_enrich`, `command_enrich`, `tags_enrich`, `desc_enrich`. The original values are not used after this point, so they could be moved directly.
+### ~~3.8 Unnecessary cloning in `handle_run` (src/cli/run.rs:88-93)~~ FIXED
+~~Multiple values are cloned to move into the enrichment tokio::spawn closure: `service_id_enrich`, `config_enrich`, `working_dir_enrich`, `command_enrich`, `tags_enrich`, `desc_enrich`. The original values are not used after this point, so they could be moved directly.~~
+**Fixed on master** (commit `3da4fb0`). Values moved into closures instead of cloning.
 
 ---
 
 ## 4. UX Improvements
 
-### 4.1 No `--version` output in direct mode
-Running `brainlog --version` correctly shows version info, but `KNOWN_SUBCOMMANDS` includes `--version` only to avoid misinterpreting it as a command. The version string itself isn't configured in `Cargo.toml` metadata (no `authors`, `license`, or `repository` fields).
+### ~~4.1 No `--version` output in direct mode~~ FIXED
+~~Running `brainlog --version` correctly shows version info, but `KNOWN_SUBCOMMANDS` includes `--version` only to avoid misinterpreting it as a command. The version string itself isn't configured in `Cargo.toml` metadata (no `authors`, `license`, or `repository` fields).~~
+**Fixed on master** (commit `5c8ec58`). Added `license`, `repository`, and `authors` to Cargo.toml. Subcommand list is now derived from clap enum (2.2).
 
-### 4.2 No progress or status indicators during run
-When wrapping a long-running process, brainlog provides no indication that it's capturing logs. A brief startup message (e.g., `[brainlog] Capturing output...` on stderr) would confirm it's active without polluting stdout.
+### ~~4.2 No progress or status indicators during run~~ FIXED
+~~When wrapping a long-running process, brainlog provides no indication that it's capturing logs. A brief startup message (e.g., `[brainlog] Capturing output...` on stderr) would confirm it's active without polluting stdout.~~
+**Fixed on master** (commit `dae4753`). Added startup indicator showing which command is being captured.
 
 ### 4.3 `list` output truncates service ID to 8 characters (src/cli/list.rs:42,91-96)
 IDs are UUIDs (36 chars) but only 8 are shown. With many services, 8-char prefixes may collide. Additionally, the `{:<8}` fixed width means IDs are never padded or truncated consistently — if the ID is shorter than 8 chars (it won't be, but the display assumes it).
@@ -131,24 +142,28 @@ IDs are UUIDs (36 chars) but only 8 are shown. With many services, 8-char prefix
 ~~There's no `brainlog delete` or `brainlog clean` command. Old services and their log files accumulate indefinitely. Users have no way to reclaim disk space short of manually deleting `~/.brainlog/`.~~
 **Fixed in `worktree-agent-a81875a5` branch** (commit `e2a8663`). Added `brainlog delete` subcommand with `--force` flag, resolves by run ID / service ID / service name, cascade-deletes ports/runs/tags and log directories. 6 unit tests.
 
-### 4.5 No confirmation or output after `run` completes
-After a wrapped command finishes, brainlog exits silently. A brief summary on stderr (e.g., `[brainlog] Run abc12345 completed (exit 0), logs at ~/.brainlog/logs/...`) would help users find their logs.
+### ~~4.5 No confirmation or output after `run` completes~~ FIXED
+~~After a wrapped command finishes, brainlog exits silently. A brief summary on stderr (e.g., `[brainlog] Run abc12345 completed (exit 0), logs at ~/.brainlog/logs/...`) would help users find their logs.~~
+**Fixed on master** (commit `f14de06`). Prints completion summary with run ID and log path.
 
 ### 4.6 `follow` mode has no way to exit cleanly (src/cli/logs.rs:75-87)
 The follow loop is infinite with no Ctrl+C handling or timeout. While Ctrl+C will kill the process, there's no "Press q to quit" or graceful shutdown messaging.
 
-### 4.7 `search` date formatting loses timezone info (src/cli/search.rs:43)
-`DateTime::from_timestamp(...).unwrap_or_default()` creates a UTC datetime, but the `%H:%M:%S` format shows time without any timezone indicator. Users in non-UTC timezones will see confusing timestamps.
+### ~~4.7 `search` date formatting loses timezone info (src/cli/search.rs:43)~~ FIXED
+~~`DateTime::from_timestamp(...).unwrap_or_default()` creates a UTC datetime, but the `%H:%M:%S` format shows time without any timezone indicator. Users in non-UTC timezones will see confusing timestamps.~~
+**Fixed on master** (commit `7ac630d`). Search result timestamps now include `UTC` indicator.
 
-### 4.8 No color support in terminal output
-`list`, `logs`, and `search` output is plain text. Colorizing error-level log lines, status indicators (running=green, failed=red), and search match highlights would improve readability.
+### ~~4.8 No color support in terminal output~~ FIXED
+~~`list`, `logs`, and `search` output is plain text. Colorizing error-level log lines, status indicators (running=green, failed=red), and search match highlights would improve readability.~~
+**Fixed on master** (commit `1beb57f`). Added terminal colours using owo-colors with TTY detection.
 
 ### ~~4.9 `--tag` requires `key:value` format with no guidance on error~~ FIXED
 ~~Passing `--tag production` silently does nothing. Passing `--tag a:b:c` splits on the first colon, making the value `b:c`, which may be unexpected.~~
 **Fixed together with 1.7** in `worktree-agent-a085fac8` branch.
 
-### 4.10 `logs` with unknown service gives a confusing error
-`brainlog logs nonexistent` returns `No service or run found matching 'nonexistent'` — it could suggest running `brainlog list` to see available services.
+### ~~4.10 `logs` with unknown service gives a confusing error~~ FIXED
+~~`brainlog logs nonexistent` returns `No service or run found matching 'nonexistent'` — it could suggest running `brainlog list` to see available services.~~
+**Fixed on master** (commit `c97deca`). Error messages now suggest `brainlog list` when a target is not found.
 
 ### 4.11 No `--json` output option
 For scripting and piping, there's no way to get machine-readable output from `list`, `logs`, or `search`. The MCP server provides structured data, but CLI users have to parse tabular text.
@@ -186,8 +201,9 @@ For a 1.0.0 release, a CHANGELOG.md describing the initial feature set establish
 ~~The Cargo.toml has no `license` field and there's no LICENSE file.~~
 **Fixed in `worktree-agent-af784c5c` branch** (commit `469dbda`). Added MIT LICENSE file and `license = "MIT"` to Cargo.toml.
 
-### 5.8 `plan.md` and `prompts/` are development artifacts
-These files document the AI-assisted development process but shouldn't be in a 1.0 release. They should either be removed or moved to a `docs/` directory.
+### ~~5.8 `plan.md` and `prompts/` are development artifacts~~ FIXED
+~~These files document the AI-assisted development process but shouldn't be in a 1.0 release. They should either be removed or moved to a `docs/` directory.~~
+**Fixed on master** (commit `19056f4`). Removed development planning artifacts.
 
 ---
 
@@ -231,11 +247,11 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 
 | Category | Critical | Major | Minor | Fixed |
 |----------|----------|-------|-------|-------|
-| Logic Errors | 0 | 1 (1.11) | 2 (1.4, 1.6) | ~~1.1~~, ~~1.2~~, ~~1.3~~, ~~1.5~~, ~~1.7~~, ~~1.8~~, ~~1.9~~, ~~1.10~~ |
-| Maintainability | 0 | 1 (2.1) | 4 (2.2, 2.4, 2.7, 2.8, 2.10) | ~~2.3~~, ~~2.5~~, ~~2.6~~, ~~2.9~~ |
-| Optimizations | 0 | 3 (3.1, 3.2, 3.3) | 5 | — |
-| UX | 0 | 1 (4.11) | 6 (4.1-4.3, 4.5-4.8, 4.10) | ~~4.4~~, ~~4.9~~, ~~4.12~~ |
-| Documentation | 0 | 1 (5.2) | 3 (5.5, 5.6, 5.8) | ~~5.1~~, ~~5.3~~, ~~5.4~~, ~~5.7~~ |
+| Logic Errors | 0 | 0 | 2 (1.4, 1.6) | ~~1.1~~, ~~1.2~~, ~~1.3~~, ~~1.5~~, ~~1.7~~, ~~1.8~~, ~~1.9~~, ~~1.10~~, ~~1.11~~ |
+| Maintainability | 0 | 0 | 2 (2.4, 2.10) | ~~2.1~~, ~~2.2~~, ~~2.3~~, ~~2.5~~, ~~2.6~~, ~~2.7~~, ~~2.8~~, ~~2.9~~ |
+| Optimizations | 0 | 3 (3.1, 3.2, 3.3) | 1 (3.4) | ~~3.5~~, ~~3.6~~, ~~3.7~~, ~~3.8~~ |
+| UX | 0 | 1 (4.11) | 2 (4.3, 4.6) | ~~4.1~~, ~~4.2~~, ~~4.4~~, ~~4.5~~, ~~4.7~~, ~~4.8~~, ~~4.9~~, ~~4.10~~, ~~4.12~~ |
+| Documentation | 0 | 1 (5.2) | 2 (5.5, 5.6) | ~~5.1~~, ~~5.3~~, ~~5.4~~, ~~5.7~~, ~~5.8~~ |
 | Security | 0 | 1 (6.6) | 6 | ~~6.1~~, ~~6.2~~ |
 
 **Original top-10 priorities — ALL DONE:**
@@ -257,6 +273,22 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 14. ~~Multi-tag AND filter (1.10)~~ -- DONE
 15. ~~Error handling consistency (2.6)~~ -- DONE
 16. ~~PID recorded immediately after spawn (1.8)~~ -- DONE
+17. ~~Partial ID ambiguity detection (1.11)~~ -- DONE
+18. ~~Cargo.toml metadata: authors, license, repository (4.1)~~ -- DONE
+19. ~~Search timestamps include UTC indicator (4.7)~~ -- DONE
+20. ~~Unknown service suggests `brainlog list` (4.10)~~ -- DONE
+21. ~~Duplicated resolve_log_dir consolidated (2.1)~~ -- DONE
+22. ~~KNOWN_SUBCOMMANDS derived from clap enum (2.2)~~ -- DONE
+23. ~~Redundant row_to_service wrappers removed (2.7)~~ -- DONE
+24. ~~datetime parsing error propagation (2.8)~~ -- DONE
+25. ~~SQL LIKE for prefix match (3.5)~~ -- DONE
+26. ~~reqwest::Client reuse (3.6)~~ -- DONE
+27. ~~Compact JSON in MCP (3.7)~~ -- DONE
+28. ~~Values moved into closures (3.8)~~ -- DONE
+29. ~~Startup indicator (4.2)~~ -- DONE
+30. ~~Completion summary (4.5)~~ -- DONE
+31. ~~Terminal colours (4.8)~~ -- DONE
+32. ~~Development artifacts removed (5.8)~~ -- DONE
 
 ---
 

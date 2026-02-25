@@ -79,6 +79,7 @@ pub struct RunInfo {
     pub ended_at: Option<String>,
     pub exit_code: Option<i32>,
     pub pid: Option<u32>,
+    pub wrapper_pid: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

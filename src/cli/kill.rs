@@ -122,7 +122,7 @@ fn parse_signal(s: &str) -> Result<Signal> {
     )
 }
 
-fn resolve_service(
+pub fn resolve_service(
     db: &Database,
     target: &str,
 ) -> Result<(crate::storage::models::Service, &'static str)> {

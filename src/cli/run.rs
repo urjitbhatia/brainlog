@@ -1,9 +1,17 @@
 use anyhow::Result;
 use chrono::Utc;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
+use signal_hook::consts::SIGUSR1;
+use signal_hook_tokio::Signals;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
+use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::cli::kill::collect_process_tree;
 use crate::cli::{parse_tag, validate_tags, RunArgs};
 use crate::config::Config;
 use crate::llm;
@@ -62,175 +70,278 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         db.add_tag(&service_id, key, value)?;
     }
 
-    // Create run
-    let run_id = Uuid::new_v4().to_string();
-    let log_dir = config.logs_dir().join(&run_id);
-    let run = Run {
-        id: run_id.clone(),
-        service_id: service_id.clone(),
-        pid: None,
-        started_at: Utc::now(),
-        ended_at: None,
-        exit_code: None,
-        log_dir: log_dir.to_string_lossy().to_string(),
-        status: RunStatus::Running,
-    };
-    db.create_run(&run)?;
+    // --- SIGUSR1 restart listener (spawned once, lives across loop iterations) ---
+    let restart_requested = Arc::new(AtomicBool::new(false));
+    let current_child_pid = Arc::new(AtomicU32::new(0));
 
-    // Set up log writer channel
-    let (tx, rx) = mpsc::channel::<Frame>(1024);
-    let log_writer = LogWriter::new(
-        log_dir.clone(),
-        rx,
-        config.capture.flush_interval_ms,
-        config.capture.flush_buffer_bytes,
-    );
-    let log_handle = tokio::spawn(async move { log_writer.run().await });
+    let restart_flag = restart_requested.clone();
+    let child_pid_ref = current_child_pid.clone();
+    let sigusr1_handle = tokio::spawn(async move {
+        let mut signals = match Signals::new([SIGUSR1]) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to register SIGUSR1 handler: {e}");
+                return;
+            }
+        };
+        while signals.next().await.is_some() {
+            restart_flag.store(true, Ordering::SeqCst);
+            let pid = child_pid_ref.load(Ordering::SeqCst);
+            if pid > 0 {
+                // Kill the entire child process tree
+                let tree = collect_process_tree(pid).await;
+                let mut kill_order: Vec<u32> = tree.iter().copied().filter(|&p| p != pid).collect();
+                kill_order.reverse();
+                kill_order.push(pid);
+                for target_pid in &kill_order {
+                    let nix_pid = Pid::from_raw(*target_pid as i32);
+                    let _ = signal::kill(nix_pid, Signal::SIGTERM);
+                }
+            }
+        }
+    });
 
-    // If resuming, inject an artificial log entry noting the restart
-    if let Some(ref old_id) = resumed_from {
-        let resume_msg = format!(
-            "[brainlog] Resumed service (previous service id: {}). Command: {}\n",
-            old_id,
-            args.command.join(" ")
+    // --- Spawn loop ---
+    #[allow(unused_assignments)]
+    let mut last_exit_code: i32 = 1;
+    let mut iteration = 0u32;
+
+    loop {
+        iteration += 1;
+
+        // Create run record for this iteration
+        let run_id = Uuid::new_v4().to_string();
+        let log_dir = config.logs_dir().join(&run_id);
+        let run = Run {
+            id: run_id.clone(),
+            service_id: service_id.clone(),
+            pid: None,
+            started_at: Utc::now(),
+            ended_at: None,
+            exit_code: None,
+            log_dir: log_dir.to_string_lossy().to_string(),
+            status: RunStatus::Running,
+            wrapper_pid: Some(std::process::id()),
+        };
+        db.create_run(&run)?;
+
+        // Set up log writer channel
+        let (tx, rx) = mpsc::channel::<Frame>(1024);
+        let log_writer = LogWriter::new(
+            log_dir.clone(),
+            rx,
+            config.capture.flush_interval_ms,
+            config.capture.flush_buffer_bytes,
         );
+        let log_handle = tokio::spawn(async move { log_writer.run().await });
+
+        // If resuming (first iteration only), inject an artificial log entry
+        if iteration == 1 {
+            if let Some(ref old_id) = resumed_from {
+                let resume_msg = format!(
+                    "[brainlog] Resumed service (previous service id: {}). Command: {}\n",
+                    old_id,
+                    args.command.join(" ")
+                );
+                let _ = tx
+                    .send(Frame {
+                        timestamp_ns: now_ns(),
+                        stream_type: StreamType::Stderr,
+                        payload: resume_msg.into_bytes(),
+                    })
+                    .await;
+            }
+        } else {
+            // Inject restart indicator for subsequent iterations
+            let restart_msg = format!(
+                "[brainlog] Restarting `{}` (iteration {})\n",
+                args.command.join(" "),
+                iteration
+            );
+            let _ = tx
+                .send(Frame {
+                    timestamp_ns: now_ns(),
+                    stream_type: StreamType::Stderr,
+                    payload: restart_msg.into_bytes(),
+                })
+                .await;
+        }
+
+        // PID channel
+        let (pid_tx, pid_rx) = oneshot::channel::<u32>();
+
+        // Prepare port detection cancellation token
+        let port_cancel = CancellationToken::new();
+        let db_path = config.db_path();
+
+        // Spawn background task for PID recording, port detection, and enrichment
+        let run_id_bg = run_id.clone();
+        let service_id_bg = service_id.clone();
+        let command_bg = args.command.clone();
+        let has_user_name = args.name.is_some() || args.resume.is_some();
+        let port_cancel_bg = port_cancel.clone();
+        let child_pid_ref_bg = current_child_pid.clone();
+        let config_bg = config.clone();
+        let working_dir_bg = working_dir.clone();
+        let tags_bg = args.tag.clone();
+        let desc_bg = args.desc.clone();
+        let first_iteration = iteration == 1;
+
+        let bg_handle = tokio::spawn(async move {
+            let pid = match pid_rx.await {
+                Ok(pid) => pid,
+                Err(_) => return,
+            };
+
+            // Store current child PID for SIGUSR1 handler
+            child_pid_ref_bg.store(pid, Ordering::SeqCst);
+
+            // Record PID in database
+            if pid > 0 {
+                if let Ok(db) = Database::open(&db_path) {
+                    if let Err(e) = db.update_run_pid(&run_id_bg, pid) {
+                        tracing::warn!("Failed to record child PID: {e}");
+                    }
+                }
+            }
+
+            // Start port detection
+            if config_bg.port_detection.enabled && pid > 0 {
+                let run_id_port = run_id_bg.clone();
+                let db_path_port = db_path.clone();
+                let poll_interval = config_bg.port_detection.poll_interval_secs;
+                let cancel = port_cancel_bg;
+                tokio::spawn(async move {
+                    platform::poll_ports(pid, &run_id_port, &db_path_port, poll_interval, cancel)
+                        .await;
+                });
+            }
+
+            // LLM enrichment (fire-and-forget, first iteration only)
+            if first_iteration && config_bg.enrichment.enabled {
+                tokio::spawn(async move {
+                    llm::enrichment::enrich_service(
+                        &config_bg,
+                        &service_id_bg,
+                        &command_bg,
+                        &working_dir_bg,
+                        &tags_bg,
+                        desc_bg.as_deref(),
+                        has_user_name,
+                    )
+                    .await;
+                });
+            }
+        });
+
+        // Print startup indicator
+        if iteration == 1 {
+            eprintln!(
+                "[brainlog] Capturing output for `{}`",
+                args.command.join(" ")
+            );
+        } else {
+            eprintln!(
+                "[brainlog] Restarting `{}` (iteration {})",
+                args.command.join(" "),
+                iteration
+            );
+        }
+
+        // Spawn the wrapped process
+        let spawn_result = process::spawn_wrapped(&args.command, tx.clone(), pid_tx).await?;
+
+        // Wait for background setup task to complete
+        let _ = bg_handle.await;
+
+        // Clear child PID since the child has exited
+        current_child_pid.store(0, Ordering::SeqCst);
+
+        // Inject exit log frame
+        let exit_code = spawn_result.exit_code.unwrap_or(1);
+        let exit_msg = format_exit_message(exit_code);
         let _ = tx
             .send(Frame {
                 timestamp_ns: now_ns(),
                 stream_type: StreamType::Stderr,
-                payload: resume_msg.into_bytes(),
+                payload: exit_msg.into_bytes(),
             })
             .await;
-    }
 
-    // PID channel — child sends PID immediately after spawn, before exiting
-    let (pid_tx, pid_rx) = oneshot::channel::<u32>();
+        // Drop sender so log writer finishes
+        drop(tx);
+        if let Err(e) = log_handle.await {
+            tracing::error!("Log writer task failed: {e}");
+        }
 
-    // Prepare port detection cancellation token
-    let port_cancel = CancellationToken::new();
-    let db_path = config.db_path();
+        // Stop port polling
+        port_cancel.cancel();
 
-    // Spawn a task that waits for the PID and starts background work immediately
-    let run_id_bg = run_id.clone();
-    let service_id_bg = service_id.clone();
-    let command_bg = args.command.clone();
-    let has_user_name = args.name.is_some() || args.resume.is_some();
-    let port_cancel_bg = port_cancel.clone();
-
-    let bg_handle = tokio::spawn(async move {
-        let pid = match pid_rx.await {
-            Ok(pid) => pid,
-            Err(_) => return,
+        // Update run status
+        let status = if exit_code == 0 {
+            RunStatus::Completed
+        } else {
+            RunStatus::Failed
         };
+        db.update_run_status(&run_id, &status, Some(exit_code))?;
 
-        // Record PID in database while child is still running
-        if pid > 0 {
-            if let Ok(db) = Database::open(&db_path) {
-                if let Err(e) = db.update_run_pid(&run_id_bg, pid) {
-                    tracing::warn!("Failed to record child PID: {e}");
-                }
+        // Print completion summary
+        let short_id = &run_id[..8.min(run_id.len())];
+        if exit_code == 0 {
+            eprintln!(
+                "[brainlog] Run {} completed (exit 0), logs at {}",
+                short_id,
+                log_dir.display()
+            );
+        } else {
+            eprintln!(
+                "[brainlog] Run {} failed (exit {}), logs at {}",
+                short_id,
+                exit_code,
+                log_dir.display()
+            );
+        }
+
+        last_exit_code = exit_code;
+
+        // --- Restart decision ---
+        if restart_requested.load(Ordering::SeqCst) {
+            // Manual restart via SIGUSR1
+            restart_requested.store(false, Ordering::SeqCst);
+            eprintln!("[brainlog] Restart requested, respawning in 1s...");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
+        }
+
+        if args.restart {
+            // Auto-restart mode: don't restart on SIGINT (130) or SIGTERM (143)
+            if exit_code == 130 || exit_code == 143 {
+                eprintln!("[brainlog] Process terminated by signal, not restarting");
+                break;
             }
+            eprintln!("[brainlog] Auto-restart enabled, respawning in 1s...");
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            continue;
         }
 
-        // Start port detection while child is still running
-        if config.port_detection.enabled && pid > 0 {
-            let run_id_port = run_id_bg.clone();
-            let db_path_port = db_path.clone();
-            let poll_interval = config.port_detection.poll_interval_secs;
-            let cancel = port_cancel_bg;
-            tokio::spawn(async move {
-                platform::poll_ports(pid, &run_id_port, &db_path_port, poll_interval, cancel).await;
-            });
-        }
-
-        // LLM enrichment (fire-and-forget)
-        if config.enrichment.enabled {
-            tokio::spawn(async move {
-                llm::enrichment::enrich_service(
-                    &config,
-                    &service_id_bg,
-                    &command_bg,
-                    &working_dir,
-                    &args.tag,
-                    args.desc.as_deref(),
-                    has_user_name,
-                )
-                .await;
-            });
-        }
-    });
-
-    // Print startup indicator
-    eprintln!(
-        "[brainlog] Capturing output for `{}`",
-        args.command.join(" ")
-    );
-
-    // Spawn the wrapped process — PID is sent via pid_tx immediately after fork/spawn
-    let spawn_result = process::spawn_wrapped(&args.command, tx.clone(), pid_tx).await?;
-
-    // Wait for background setup task to complete
-    let _ = bg_handle.await;
-
-    // Inject an artificial exit log frame recording how the process exited
-    let exit_code = spawn_result.exit_code.unwrap_or(1);
-    let exit_msg = format_exit_message(exit_code);
-    let _ = tx
-        .send(Frame {
-            timestamp_ns: now_ns(),
-            stream_type: StreamType::Stderr,
-            payload: exit_msg.into_bytes(),
-        })
-        .await;
-
-    // Drop the sender so the log writer can finish
-    drop(tx);
-
-    // Wait for log writer to finish
-    if let Err(e) = log_handle.await {
-        tracing::error!("Log writer task failed: {e}");
+        // No restart — exit the loop
+        break;
     }
 
-    // Stop port polling now that the child has exited
-    port_cancel.cancel();
+    // Abort the SIGUSR1 listener
+    sigusr1_handle.abort();
 
-    // Update run status
-    let status = if exit_code == 0 {
-        RunStatus::Completed
-    } else {
-        RunStatus::Failed
-    };
-    db.update_run_status(&run_id, &status, Some(exit_code))?;
-
-    // Print completion summary to stderr
-    let short_id = &run_id[..8.min(run_id.len())];
-    if exit_code == 0 {
-        eprintln!(
-            "[brainlog] Run {} completed (exit 0), logs at {}",
-            short_id,
-            log_dir.display()
-        );
-    } else {
-        eprintln!(
-            "[brainlog] Run {} failed (exit {}), logs at {}",
-            short_id,
-            exit_code,
-            log_dir.display()
-        );
-    }
-
-    // Print resume hint to stderr
+    // Print resume hint
     let svc_name = if let Some(name) = effective_name {
         name
     } else {
-        // Try to get the name from the DB (may have been enriched)
         db.get_service(&service_id)?
             .and_then(|s| s.name)
             .unwrap_or_else(|| service_id.clone())
     };
     print_resume_hint(&svc_name, &args.command);
 
-    Ok(exit_code)
+    Ok(last_exit_code)
 }
 
 fn create_service(

@@ -123,6 +123,7 @@ fn discover_services_grouped(
             ended_at: r.ended_at.map(|t| t.to_rfc3339()),
             exit_code: r.exit_code,
             pid: r.pid,
+            wrapper_pid: r.wrapper_pid,
         });
 
         result.push(GroupedServiceInfo {
@@ -206,6 +207,7 @@ fn discover_services_flat(
             ended_at: r.ended_at.map(|t| t.to_rfc3339()),
             exit_code: r.exit_code,
             pid: r.pid,
+            wrapper_pid: r.wrapper_pid,
         });
 
         result.push(ServiceInfo {
@@ -453,6 +455,7 @@ mod tests {
             exit_code: Some(0),
             log_dir: log_dir.to_string_lossy().to_string(),
             status: RunStatus::Completed,
+            wrapper_pid: None,
         };
         db.create_run(&run).unwrap();
 
@@ -983,6 +986,7 @@ mod tests {
             exit_code: Some(0),
             log_dir: log_dir.to_string_lossy().to_string(),
             status: RunStatus::Completed,
+            wrapper_pid: None,
         };
         db.create_run(&run).unwrap();
 

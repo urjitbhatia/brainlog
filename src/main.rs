@@ -94,6 +94,13 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::Restart(args)) => match cli::restart::handle_restart(args).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("brainlog: {:#}", e);
+                ExitCode::FAILURE
+            }
+        },
         None => {
             // No command provided, print help
             use clap::CommandFactory;

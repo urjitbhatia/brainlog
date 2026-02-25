@@ -55,6 +55,7 @@ pub struct Run {
     pub exit_code: Option<i32>,
     pub log_dir: String,
     pub status: RunStatus,
+    pub wrapper_pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

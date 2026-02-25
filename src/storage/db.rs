@@ -112,8 +112,8 @@ impl Database {
 
     pub fn create_run(&self, run: &Run) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO runs (id, service_id, pid, started_at, ended_at, exit_code, log_dir, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO runs (id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 run.id,
                 run.service_id,
@@ -123,6 +123,7 @@ impl Database {
                 run.exit_code,
                 run.log_dir,
                 run.status.as_str(),
+                run.wrapper_pid,
             ],
         )?;
         Ok(())
@@ -151,7 +152,7 @@ impl Database {
 
     pub fn get_run(&self, id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status
+            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid
              FROM runs WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![id])?;
@@ -164,7 +165,7 @@ impl Database {
 
     pub fn get_latest_run(&self, service_id: &str) -> Result<Option<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status
+            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid
              FROM runs WHERE service_id = ?1 ORDER BY started_at DESC LIMIT 1",
         )?;
         let mut rows = stmt.query(params![service_id])?;
@@ -243,7 +244,7 @@ impl Database {
 
     pub fn list_runs(&self, service_id: &str) -> Result<Vec<Run>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status
+            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid
              FROM runs WHERE service_id = ?1 ORDER BY started_at DESC",
         )?;
         let runs = stmt
@@ -693,6 +694,7 @@ mod tests {
             exit_code: None,
             log_dir: "/tmp/logs".to_string(),
             status,
+            wrapper_pid: None,
         }
     }
 
@@ -1719,5 +1721,6 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> {
         exit_code: row.get(5)?,
         log_dir: row.get(6)?,
         status: RunStatus::parse(&status_str),
+        wrapper_pid: row.get::<_, Option<i64>>(8)?.map(|p| p as u32),
     })
 }

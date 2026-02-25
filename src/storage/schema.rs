@@ -26,7 +26,8 @@ const V1_SCHEMA: &str = "
         ended_at    TEXT,
         exit_code   INTEGER,
         log_dir     TEXT NOT NULL,
-        status      TEXT NOT NULL DEFAULT 'running'
+        status      TEXT NOT NULL DEFAULT 'running',
+        wrapper_pid INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS tags (

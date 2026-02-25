@@ -3,6 +3,7 @@ pub mod list;
 pub mod logs;
 pub mod mcp;
 pub mod purge;
+pub mod restart;
 pub mod run;
 pub mod search;
 
@@ -38,6 +39,8 @@ pub enum Commands {
     Mcp,
     /// Purge old services and their logs
     Purge(PurgeArgs),
+    /// Restart a running monitored process
+    Restart(RestartArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -58,9 +61,19 @@ pub struct RunArgs {
     #[arg(short, long)]
     pub desc: Option<String>,
 
+    /// Auto-restart the child on any exit (except SIGINT/SIGTERM)
+    #[arg(long)]
+    pub restart: bool,
+
     /// Command and arguments to run
     #[arg(trailing_var_arg = true, required = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct RestartArgs {
+    /// Service name, ID, or ID prefix
+    pub target: String,
 }
 
 /// Parse a single tag string into (key, value), validating the format.
@@ -220,6 +233,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
     let mut resume: Option<String> = None;
     let mut tags: Vec<String> = Vec::new();
     let mut desc: Option<String> = None;
+    let mut restart = false;
     let mut command_start = 1;
 
     let mut i = 1;
@@ -262,6 +276,11 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
                     break;
                 }
             }
+            "--restart" => {
+                restart = true;
+                i += 1;
+                command_start = i;
+            }
             _ => break, // First unrecognized arg starts the command
         }
     }
@@ -276,6 +295,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
         resume,
         tag: tags,
         desc,
+        restart,
         command,
     })
 }
@@ -334,6 +354,7 @@ mod tests {
             "kill",
             "mcp",
             "purge",
+            "restart",
             "help",
             "--help",
             "-h",

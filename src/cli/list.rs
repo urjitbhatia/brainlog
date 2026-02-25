@@ -16,6 +16,27 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Get terminal width, defaulting to 120 if unavailable.
+fn term_width() -> usize {
+    // Try the COLUMNS env var first, then fall back to a reasonable default
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120)
+}
+
+/// Truncate a string to fit within `max_len`, appending `..` if truncated.
+fn truncate(s: &str, max_len: usize) -> String {
+    if max_len < 3 {
+        return s.chars().take(max_len).collect();
+    }
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}..", &s[..max_len - 2])
+    }
+}
+
 pub async fn handle_list(args: ListArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
@@ -35,30 +56,11 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Compute name column width from data (minimum 4 for "NAME" header)
-    let name_width = services
-        .iter()
-        .map(|s| s.name.as_deref().unwrap_or(&s.id[..8]).len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
+    if args.verbose {
+        for service in &services {
+            let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
+            let desc_display = service.description.as_deref().unwrap_or("(no description)");
 
-    if !args.verbose {
-        println!(
-            "{:<8}  {:<nw$}  {:<12}  {:<20}  COMMAND",
-            "ID",
-            "NAME",
-            "STATUS",
-            "CREATED",
-            nw = name_width
-        );
-    }
-
-    for service in &services {
-        let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
-        let desc_display = service.description.as_deref().unwrap_or("(no description)");
-
-        if args.verbose {
             println!("ID:          {}", service.id);
             println!("Name:        {}", name_display);
             println!("Description: {}", desc_display);
@@ -99,24 +101,50 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
                 );
             }
             println!("---");
-        } else {
-            let status = if let Some(run) = db.get_latest_run(&service.id)? {
-                run.status.as_str().to_string()
-            } else {
-                "no runs".to_string()
-            };
-            let created = service.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
-            println!(
-                "{:<8}  {:<nw$}  {:<12}  {:<20}  {}",
-                &service.id[..8],
-                name_display,
-                status,
-                created,
-                service.command_line.join(" "),
-                nw = name_width
-            );
         }
+        return Ok(());
     }
+
+    // Fixed-width columns: ID(8) + STATUS(12) + CREATED(20) + gaps(8) = 48
+    let fixed_cols = 48;
+    let width = term_width();
+    let available = width.saturating_sub(fixed_cols);
+    // Split remaining space: ~40% name, ~60% command
+    let name_max = (available * 2 / 5).max(10);
+    let cmd_max = available.saturating_sub(name_max).max(10);
+
+    println!(
+        "{:<8}  {:<nw$}  {:<12}  {:<20}  COMMAND",
+        "ID",
+        "NAME",
+        "STATUS",
+        "CREATED",
+        nw = name_max
+    );
+
+    for service in &services {
+        let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
+        let status = if let Some(run) = db.get_latest_run(&service.id)? {
+            run.status.as_str().to_string()
+        } else {
+            "no runs".to_string()
+        };
+        let created = service.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+        let cmd = service.command_line.join(" ");
+
+        println!(
+            "{:<8}  {:<nw$}  {:<12}  {:<20}  {}",
+            &service.id[..8],
+            truncate(name_display, name_max),
+            status,
+            created,
+            truncate(&cmd, cmd_max),
+            nw = name_max
+        );
+    }
+
+    eprintln!();
+    eprintln!("Tip: resume a service with: brainlog --resume <name> <command>");
 
     Ok(())
 }

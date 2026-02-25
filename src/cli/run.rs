@@ -478,69 +478,35 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
-/// Noise subcommands that are filtered out of derived names.
-/// These are common "do nothing" verbs used by package managers and task runners.
-const NOISE_SUBCOMMANDS: &[&str] = &["run", "exec"];
-
-/// Maximum number of parts (executable + positional args) in a derived name.
-const MAX_NAME_PARTS: usize = 4;
-
-/// Derive a human-readable service name from the working directory and command.
+/// Derive a compact service name: `<cwd_basename>/<executable>-<hash>`.
 ///
-/// Format: `<cwd_basename>/<executable>-<arg1>-<arg2>-...`
-///
-/// Noise subcommands like `run` (e.g. `pnpm run dev`) are stripped so the
-/// derived name stays concise (`pnpm-dev` instead of `pnpm-run-dev`).
-/// Flags (args starting with `-`) and their values are skipped entirely.
-/// At most [`MAX_NAME_PARTS`] parts are kept to prevent overly long names.
-/// Arguments preserve colons (e.g. `dev:with-binding`) and are joined with `-`.
-/// The working directory basename is separated from the command part by `/`.
+/// The hash is a 6-char hex digest of the full command (including all args/flags),
+/// so different invocations of the same executable get distinct names.
 fn derive_name(working_dir: &str, command: &[String]) -> String {
     let dir_basename = std::path::Path::new(working_dir)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let mut filtered: Vec<&str> = Vec::new();
+    let executable = command
+        .first()
+        .map(|s| {
+            std::path::Path::new(s.as_str())
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| s.clone())
+        })
+        .unwrap_or_default();
 
-    for (i, arg) in command.iter().enumerate() {
-        // Always include the executable (index 0)
-        if i == 0 {
-            filtered.push(arg);
-            continue;
-        }
-
-        // Skip flags (we can't distinguish boolean flags from value flags,
-        // so just skip anything starting with `-`)
-        if arg.starts_with('-') {
-            continue;
-        }
-
-        // Skip noise subcommands
-        if NOISE_SUBCOMMANDS.contains(&arg.as_str()) {
-            continue;
-        }
-
-        filtered.push(arg);
-
-        if filtered.len() >= MAX_NAME_PARTS {
-            break;
-        }
-    }
-
-    let cmd_part = filtered.join("-");
-
-    // Append a short hash of the full command (including flags) so that
-    // invocations differing only in flag values get distinct names.
     let mut hasher = DefaultHasher::new();
     command.hash(&mut hasher);
     let hash = hasher.finish();
-    let short_hash = format!("{:06x}", hash & 0xFFFFFF); // 6 hex chars
+    let short_hash = format!("{:06x}", hash & 0xFFFFFF);
 
     if dir_basename.is_empty() {
-        format!("{cmd_part}-{short_hash}")
+        format!("{executable}-{short_hash}")
     } else {
-        format!("{dir_basename}/{cmd_part}-{short_hash}")
+        format!("{dir_basename}/{executable}-{short_hash}")
     }
 }
 
@@ -549,96 +515,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_derive_name_pnpm_dev_with_binding() {
+    fn test_derive_name_basic() {
         let name = derive_name(
             "/Users/urjit/code/pimlico/web",
-            &[
-                "pnpm".to_string(),
-                "run".to_string(),
-                "dev:with-binding".to_string(),
-            ],
+            &["pnpm".to_string(), "run".to_string(), "dev".to_string()],
         );
-        assert!(name.starts_with("web/pnpm-dev:with-binding-"));
-        // Ends with 6 hex chars
-        assert_eq!(name.len(), "web/pnpm-dev:with-binding-".len() + 6);
+        assert!(name.starts_with("web/pnpm-"));
+        assert_eq!(name.len(), "web/pnpm-".len() + 6);
     }
 
     #[test]
-    fn test_derive_name_make_dev() {
-        let name = derive_name(
-            "/Users/urjit/code/pimlico/api",
-            &["make".to_string(), "dev".to_string()],
-        );
-        assert!(name.starts_with("api/make-dev-"));
-    }
-
-    #[test]
-    fn test_derive_name_cargo_test() {
-        let name = derive_name(
-            "/home/user/project",
-            &["cargo".to_string(), "test".to_string()],
-        );
-        assert!(name.starts_with("project/cargo-test-"));
-    }
-
-    #[test]
-    fn test_derive_name_single_command() {
-        let name = derive_name("/home/user/myapp", &["node".to_string()]);
-        assert!(name.starts_with("myapp/node-"));
-    }
-
-    #[test]
-    fn test_derive_name_root_dir() {
+    fn test_derive_name_no_dir_basename() {
         let name = derive_name("/", &["ls".to_string()]);
-        // Root has no basename, so just the command part + hash
         assert!(name.starts_with("ls-"));
+        assert_eq!(name.len(), "ls-".len() + 6);
     }
 
     #[test]
-    fn test_derive_name_skips_flags() {
+    fn test_derive_name_full_path_executable() {
         let name = derive_name(
-            "/Users/urjit/code/report-generator-v2",
-            &[
-                "uv".to_string(),
-                "run".to_string(),
-                "rg2".to_string(),
-                "critique".to_string(),
-                "--gemini".to_string(),
-                "--jurisdiction".to_string(),
-                "malta".to_string(),
-                "--vertical".to_string(),
-                "gambling".to_string(),
-            ],
+            "/home/user/app",
+            &["/usr/bin/python3".to_string(), "server.py".to_string()],
         );
-        // Flags are skipped, "run" is noise, positional-looking values remain
-        // capped at MAX_NAME_PARTS (4): uv, rg2, critique, malta
-        assert!(name.starts_with("report-generator-v2/uv-rg2-critique-malta-"));
-    }
-
-    #[test]
-    fn test_derive_name_different_flags_different_hash() {
-        let name_a = derive_name(
-            "/app",
-            &[
-                "rg2".to_string(),
-                "critique".to_string(),
-                "--jurisdiction".to_string(),
-                "malta".to_string(),
-            ],
-        );
-        let name_b = derive_name(
-            "/app",
-            &[
-                "rg2".to_string(),
-                "critique".to_string(),
-                "--jurisdiction".to_string(),
-                "cyprus".to_string(),
-            ],
-        );
-        // Same prefix but different hashes
-        assert!(name_a.starts_with("app/rg2-critique-malta-"));
-        assert!(name_b.starts_with("app/rg2-critique-cyprus-"));
-        assert_ne!(name_a, name_b);
+        // Uses just the filename from the executable path
+        assert!(name.starts_with("app/python3-"));
     }
 
     #[test]
@@ -650,33 +550,27 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_name_caps_at_max_parts() {
-        let name = derive_name(
-            "/home/user/project",
+    fn test_derive_name_different_args_different_hash() {
+        let name_a = derive_name(
+            "/app",
             &[
-                "python".to_string(),
-                "manage.py".to_string(),
-                "migrate".to_string(),
-                "myapp".to_string(),
-                "zero".to_string(),
+                "rg2".to_string(),
+                "--jurisdiction".to_string(),
+                "malta".to_string(),
             ],
         );
-        // Max 4 parts: python, manage.py, migrate, myapp
-        assert!(name.starts_with("project/python-manage.py-migrate-myapp-"));
-    }
-
-    #[test]
-    fn test_derive_name_flag_with_equals() {
-        let name = derive_name(
-            "/home/user/app",
+        let name_b = derive_name(
+            "/app",
             &[
-                "cargo".to_string(),
-                "test".to_string(),
-                "--color=always".to_string(),
+                "rg2".to_string(),
+                "--jurisdiction".to_string(),
+                "cyprus".to_string(),
             ],
         );
-        // --color=always is a flag, skipped
-        assert!(name.starts_with("app/cargo-test-"));
+        // Same executable prefix, different hashes
+        assert!(name_a.starts_with("app/rg2-"));
+        assert!(name_b.starts_with("app/rg2-"));
+        assert_ne!(name_a, name_b);
     }
 
     #[test]

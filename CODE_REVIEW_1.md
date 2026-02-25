@@ -65,8 +65,8 @@ The enrichment task opens a new `Database::open(&config.db_path())` instead of r
 ~~The schema uses `CREATE TABLE IF NOT EXISTS` which means columns cannot be added/modified in future versions. There's no version tracking or migration system. Shipping 1.0.0 with this means any schema change in 1.1 will require manual migration tooling.~~
 **Fixed in `worktree-agent-a262d98f` branch** (commit `17818eb`). Added `schema_version` table, migration framework with version check on open, and error on newer-than-supported versions. 7 unit tests covering fresh db, re-open, newer version error, and pre-versioning upgrade.
 
-### 2.4 `Database` is not `Send` or thread-safe (src/storage/db.rs:9-11)
-`Database` wraps a `rusqlite::Connection` which is not `Send`. This forces the enrichment and port detection tasks to open their own connections. A connection pool or `Arc<Mutex<Connection>>` pattern would be more maintainable.
+### 2.4 `Database` is not `Send` or thread-safe (src/storage/db.rs:9-11) — BY DESIGN
+`Database` wraps a `rusqlite::Connection` which is not `Send`. This forces the enrichment and port detection tasks to open their own connections. This is the correct pattern for SQLite — per-task connections with WAL mode handle concurrent access safely. `Arc<Mutex<Connection>>` would introduce mutex contention in async contexts, which is worse.
 
 ### ~~2.5 String-typed enums everywhere~~ FIXED
 ~~`LogsArgs.stream`, `SearchArgs.stream`, etc. are all `String` instead of enums.~~
@@ -88,8 +88,8 @@ The enrichment task opens a new `Database::open(&config.db_path())` instead of r
 ~~`thiserror = "2"` is declared but no custom error types use `#[derive(Error)]`. `base64 = "0.22"` is declared but never used anywhere in the codebase. Dead dependencies increase compile times.~~
 **Removed in `worktree-agent-ac1565b1` branch** (commit `f27d0a7`). Both dependencies deleted from Cargo.toml.
 
-### 2.10 `async-trait` may be unnecessary
-With Rust 2021 edition and recent compiler support for async traits, `async-trait` could potentially be replaced with native `async fn in trait` syntax, reducing macro overhead.
+### 2.10 `async-trait` may be unnecessary — WON'T FIX
+`async-trait` is required because `LlmClient` is used as `Box<dyn LlmClient>`. Native `async fn in trait` (stable since Rust 1.75) produces `impl Future` return types that make the trait not dyn-compatible. Removing `async-trait` would require an enum dispatch pattern, which adds complexity for no practical benefit.
 
 ---
 
@@ -194,8 +194,9 @@ For scripting and piping, there's no way to get machine-readable output from `li
 ~~`brainlog --help` shows clap's generated help for subcommand mode, but doesn't explain that `brainlog <cmd>` works as a direct wrapper.~~
 **Fixed in `worktree-agent-a5648cd3` branch** (commit `d903476`). Added `long_about` to Cli struct showing direct mode, explicit mode, and management commands with examples.
 
-### 5.5 MCP tool descriptions are minimal
-The MCP tool descriptions (e.g., "Discover tracked services") are functional but don't explain expected input formats (e.g., tag format `key:value`), default values, or example usage. LLM agents benefit from richer tool descriptions.
+### ~~5.5 MCP tool descriptions are minimal~~ FIXED
+~~The MCP tool descriptions (e.g., "Discover tracked services") are functional but don't explain expected input formats (e.g., tag format `key:value`), default values, or example usage. LLM agents benefit from richer tool descriptions.~~
+**Fixed on master**. All four tool descriptions now include parameter formats (tag syntax, regex syntax, nanosecond timestamps), default values, usage patterns (e.g., incremental polling with `since`), and behavioral notes (e.g., `wait_for_pattern` defaults to matching only new lines).
 
 ### 5.6 No CHANGELOG or release notes
 For a 1.0.0 release, a CHANGELOG.md describing the initial feature set establishes a baseline for future releases.
@@ -251,10 +252,10 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 | Category | Critical | Major | Minor | Fixed |
 |----------|----------|-------|-------|-------|
 | Logic Errors | 0 | 0 | 2 (1.4, 1.6) | ~~1.1~~, ~~1.2~~, ~~1.3~~, ~~1.5~~, ~~1.7~~, ~~1.8~~, ~~1.9~~, ~~1.10~~, ~~1.11~~ |
-| Maintainability | 0 | 0 | 2 (2.4, 2.10) | ~~2.1~~, ~~2.2~~, ~~2.3~~, ~~2.5~~, ~~2.6~~, ~~2.7~~, ~~2.8~~, ~~2.9~~ |
+| Maintainability | 0 | 0 | 0 | ~~2.1~~, ~~2.2~~, ~~2.3~~, 2.4 (by design), ~~2.5~~, ~~2.6~~, ~~2.7~~, ~~2.8~~, ~~2.9~~, 2.10 (won't fix) |
 | Optimizations | 0 | 0 | 1 (3.4) | ~~3.1~~, ~~3.2~~, ~~3.3~~, ~~3.5~~, ~~3.6~~, ~~3.7~~, ~~3.8~~ |
 | UX | 0 | 1 (4.11) | 2 (4.3, 4.6) | ~~4.1~~, ~~4.2~~, ~~4.4~~, ~~4.5~~, ~~4.7~~, ~~4.8~~, ~~4.9~~, ~~4.10~~, ~~4.12~~ |
-| Documentation | 0 | 1 (5.2) | 2 (5.5, 5.6) | ~~5.1~~, ~~5.3~~, ~~5.4~~, ~~5.7~~, ~~5.8~~ |
+| Documentation | 0 | 1 (5.2) | 1 (5.6) | ~~5.1~~, ~~5.3~~, ~~5.4~~, ~~5.5~~, ~~5.7~~, ~~5.8~~ |
 | Security | 0 | 1 (6.6) | 6 | ~~6.1~~, ~~6.2~~ |
 
 **Original top-10 priorities — ALL DONE:**
@@ -295,6 +296,9 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 33. ~~BufReader for log I/O (3.1)~~ -- DONE
 34. ~~Streaming read_range (3.2)~~ -- DONE
 35. ~~Streaming search (3.3)~~ -- DONE
+36. ~~Rich MCP tool descriptions (5.5)~~ -- DONE
+37. Database not Send (2.4) -- BY DESIGN (SQLite + WAL per-task connections is correct)
+38. async-trait (2.10) -- WON'T FIX (required for dyn LlmClient compatibility)
 
 ---
 

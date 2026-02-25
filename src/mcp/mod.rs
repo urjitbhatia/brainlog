@@ -37,9 +37,9 @@ impl BrainlogMcp {
         })
     }
 
-    /// Discover tracked services. Filter by name, tags, port, executable, or status.
+    /// Discover tracked services.
     #[tool(
-        description = "Discover tracked services. Filter by name, tags, port, executable, or status. Returns service metadata, latest run info, and detected ports."
+        description = "Discover tracked services wrapped by brainlog. Returns service metadata (name, executable, working directory, command line), latest run info (status, PID, exit code, timestamps), detected TCP ports, and optional log preview.\n\nFilters: name (substring), tags (key:value format, AND logic), port (exact u16), executable (substring), cwd (substring of working directory), status (running|completed|failed), query (semantic search via LLM).\n\nResults are grouped by executable+working_dir by default (set group=false for flat list). Use tail_lines to include a preview of recent log output. Use limit to cap results (default 20)."
     )]
     async fn discover_services(
         &self,
@@ -57,7 +57,7 @@ impl BrainlogMcp {
 
     /// Get logs for a service or run.
     #[tool(
-        description = "Get logs for a service or run. Supports head/tail/range modes with configurable line count and max bytes."
+        description = "Get logs for a service or run. The id parameter accepts a service name, service ID, or run ID (prefix match supported).\n\nModes: tail (default, last N lines), head (first N lines), range (by timestamp). Stream: combined (default), stdout, stderr, stdin.\n\nUse since (nanoseconds since epoch) for incremental polling — pass the timestamp of your last-seen frame to get only newer output. Use max_bytes to limit response size (default 51200). ANSI escape codes are stripped by default (set strip_ansi=false to preserve)."
     )]
     async fn get_logs(
         &self,
@@ -75,7 +75,7 @@ impl BrainlogMcp {
 
     /// Search logs across services using regex patterns.
     #[tool(
-        description = "Search logs across services using regex patterns. Returns matching lines with timestamps and context."
+        description = "Search log content across all services (or a specific service) using regex patterns. Returns matching lines with timestamps, stream type, service ID, and run ID.\n\nSupports Rust regex syntax including alternation (error|warn), character classes, and quantifiers. Filter by service_id, stream (stdout/stderr/stdin/combined), and time range (start_time/end_time in nanoseconds since epoch). Use max_matches to limit results (default 50). ANSI codes are stripped by default."
     )]
     async fn search_logs(
         &self,
@@ -93,7 +93,7 @@ impl BrainlogMcp {
 
     /// Wait for a regex pattern to appear in logs.
     #[tool(
-        description = "Wait for a regex pattern to appear in logs (with timeout), like Playwright's wait_for_text. Blocks until the pattern is found or timeout is reached. Ideal for agents verifying async behavior end-to-end."
+        description = "Block until a regex pattern appears in a service's logs, or timeout. Similar to Playwright's wait_for_text. Ideal for verifying async behavior: trigger an action, then wait_for_pattern to confirm it happened.\n\nThe id parameter accepts a service name, service ID, or run ID. By default only matches NEW log lines (since=now). Set since=0 to search full history. Supports Rust regex with alternation (started|error). Configurable timeout (default 30s) and poll_interval_ms (default 500ms). Returns the matching line, its timestamp, and elapsed wait time."
     )]
     async fn wait_for_pattern(
         &self,

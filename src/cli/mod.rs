@@ -45,7 +45,8 @@ pub enum Commands {
 
 #[derive(Parser, Debug, Clone)]
 pub struct RunArgs {
-    /// Name for this service (reuses existing service if name matches)
+    /// Name for this service (reuses existing service if name matches).
+    /// Falls back to BRAINLOG_SERVICE_NAME env var if not provided.
     #[arg(short, long)]
     pub name: Option<String>,
 

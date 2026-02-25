@@ -32,6 +32,12 @@
 
 **[DONE] Startup indicator** — Shows which command is being captured when brainlog starts.
 
+11. **[DONE] `since` cursor for incremental log polling** — `get_logs` now accepts a `since` parameter (nanoseconds since epoch). Works with head, tail, and range modes. Omit to get all frames (backward compatible).
+
+14. **[DONE] Terminal output colours** — Coloured status indicators (green=running, yellow=completed, red=failed), bold headers, dim tips/paths, cyan resume commands. Uses `owo-colors` with TTY detection — plain text when piped.
+
+**[DONE] `BRAINLOG_SERVICE_NAME` env var** — Alternative to `--name` for scripted/automated launches. Priority: `--name` flag > env var > `--resume` > derived name. Also propagated to child processes.
+
 ---
 
 ## Open
@@ -41,10 +47,6 @@
 6. **Auto port detection based on file descriptors** — Port detection works for some cases (found Claude Code's internal ports) but missed a web server on port 5174 that was visible in its own logs. Needs investigation.
 
 10. **Port detection missed the web UI** — Related to #6. Web server listening on port 5174 showed empty `ports` array. May need log-based port detection as a fallback.
-
-11. **`since` cursor for incremental log polling** — `get_logs` could benefit from a `since` parameter (like `wait_for_pattern` now has) for clean incremental polling without re-reading old frames.
-
-14. **Terminal output colours** — Would be nice to add colours to CLI output: `--resume` flag, list table headers, status indicators, etc.
 
 ---
 
@@ -61,6 +63,6 @@ Context: Tested wrapping Claude Code with brainlog (`brainlog run --name "claude
 **What doesn't work well:**
 - Claude Code's output is TUI-based (cursor movements, screen redraws, DEC private mode sequences). The VT parser-based `strip_ansi` handles most cases now, but extremely complex TUI apps may still have artifacts.
 - No parseable session identity in Claude Code's stdout. The status line has project path + model but it's buried in TUI noise. Parsing it is fragile — `--name` is the right approach.
-- `BRAINLOG_SERVICE_NAME` env var would be a nice alternative to `--name` for scripted/automated launches.
+- `BRAINLOG_SERVICE_NAME` env var is now supported as an alternative to `--name`.
 
 **Conclusion:** Agent-observes-agent via brainlog works. The `--name` + `discover_services` + `get_logs(strip_ansi=true)` pipeline is the path.

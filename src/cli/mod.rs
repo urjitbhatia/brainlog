@@ -176,6 +176,10 @@ pub struct PurgeArgs {
     #[arg(long)]
     pub before: String,
 
+    /// Only purge services whose name contains this string
+    #[arg(short, long)]
+    pub name: Option<String>,
+
     /// Only purge services whose command line contains this string
     #[arg(long, allow_hyphen_values = true)]
     pub command: Option<String>,

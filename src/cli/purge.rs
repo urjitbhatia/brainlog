@@ -2,7 +2,8 @@ use anyhow::{bail, Result};
 use chrono::Utc;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
-use std::io::{self, Write};
+use owo_colors::OwoColorize;
+use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
 use crate::cli::kill::collect_process_tree;
@@ -59,6 +60,17 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
 
     let mut candidates = db.find_purgeable_services(&cutoff, args.force)?;
 
+    // Filter by name substring if specified
+    if let Some(ref name_filter) = args.name {
+        let needle = name_filter.to_lowercase();
+        candidates.retain(|c| {
+            c.name
+                .as_deref()
+                .map(|n| n.to_lowercase().contains(&needle))
+                .unwrap_or(false)
+        });
+    }
+
     // Filter by command substring if specified
     if let Some(ref cmd_filter) = args.command {
         let needle = cmd_filter.to_lowercase();
@@ -69,6 +81,8 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
         println!("No services found matching criteria.");
         return Ok(());
     }
+
+    let tty = std::io::stdout().is_terminal();
 
     // Display what will be purged
     println!(
@@ -87,12 +101,25 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
         } else {
             cmd
         };
-        println!("  {} ({})  $ {}", display_name, id_short, cmd_display);
+        if tty {
+            println!(
+                "  {} ({})  $ {}",
+                display_name.bold(),
+                id_short.dimmed(),
+                cmd_display
+            );
+        } else {
+            println!("  {} ({})  $ {}", display_name, id_short, cmd_display);
+        }
     }
     println!();
 
     if args.dry_run {
-        println!("Dry run: no changes made.");
+        if tty {
+            println!("{}", "Dry run: no changes made.".dimmed());
+        } else {
+            println!("Dry run: no changes made.");
+        }
         return Ok(());
     }
 
@@ -156,7 +183,24 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
         total_runs += runs_deleted;
     }
 
-    if killed_count > 0 {
+    if tty {
+        if killed_count > 0 {
+            println!(
+                "{} Killed {} running process(es). Purged {} service(s) and {} run(s).",
+                "ok".green(),
+                killed_count,
+                total_services,
+                total_runs
+            );
+        } else {
+            println!(
+                "{} Purged {} service(s) and {} run(s).",
+                "ok".green(),
+                total_services,
+                total_runs
+            );
+        }
+    } else if killed_count > 0 {
         println!(
             "Killed {} running process(es). Purged {} service(s) and {} run(s).",
             killed_count, total_services, total_runs

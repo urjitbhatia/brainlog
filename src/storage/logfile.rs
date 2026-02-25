@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
@@ -160,10 +160,11 @@ impl LogReader {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let mut file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
         let mut frames = Vec::new();
         loop {
-            match read_one_frame(&mut file) {
+            match read_one_frame(&mut reader) {
                 Ok(Some(frame)) => frames.push(frame),
                 Ok(None) => break,
                 Err(e) => {
@@ -179,10 +180,11 @@ impl LogReader {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let mut file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
         let mut frames = Vec::with_capacity(n);
         for _ in 0..n {
-            match read_one_frame(&mut file) {
+            match read_one_frame(&mut reader) {
                 Ok(Some(frame)) => frames.push(frame),
                 Ok(None) => break,
                 Err(e) => {
@@ -198,10 +200,11 @@ impl LogReader {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let mut file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
         let mut ring = VecDeque::with_capacity(n + 1);
         loop {
-            match read_one_frame(&mut file) {
+            match read_one_frame(&mut reader) {
                 Ok(Some(frame)) => {
                     ring.push_back(frame);
                     if ring.len() > n {
@@ -218,43 +221,74 @@ impl LogReader {
         Ok(ring.into())
     }
 
+    /// Read frames within a time range, streaming frame-by-frame.
+    /// Skips frames before `start_time` and stops early after `end_time`.
     pub fn read_range(&self, start_time: Option<u64>, end_time: Option<u64>) -> Result<Vec<Frame>> {
-        let frames = self.read_frames()?;
-        Ok(frames
-            .into_iter()
-            .filter(|f| {
-                if let Some(start) = start_time {
-                    if f.timestamp_ns < start {
-                        return false;
-                    }
-                }
-                if let Some(end) = end_time {
-                    if f.timestamp_ns > end {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect())
-    }
-
-    pub fn search(&self, pattern: &regex::Regex, max_matches: usize) -> Result<Vec<LogMatch>> {
-        let frames = self.read_frames()?;
-        let mut matches = Vec::new();
-        for (idx, frame) in frames.iter().enumerate() {
-            if let Ok(text) = std::str::from_utf8(&frame.payload) {
-                for line in text.lines() {
-                    if pattern.is_match(line) {
-                        matches.push(LogMatch {
-                            frame_index: idx,
-                            timestamp_ns: frame.timestamp_ns,
-                            stream_type: frame.stream_type,
-                            line: line.to_string(),
-                        });
-                        if matches.len() >= max_matches {
-                            return Ok(matches);
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = std::fs::File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
+        let mut frames = Vec::new();
+        loop {
+            match read_one_frame(&mut reader) {
+                Ok(Some(frame)) => {
+                    if let Some(end) = end_time {
+                        if frame.timestamp_ns > end {
+                            break;
                         }
                     }
+                    if let Some(start) = start_time {
+                        if frame.timestamp_ns < start {
+                            continue;
+                        }
+                    }
+                    frames.push(frame);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("Error reading frame: {}", e);
+                    break;
+                }
+            }
+        }
+        Ok(frames)
+    }
+
+    /// Search log frames for a pattern, streaming frame-by-frame.
+    /// Stops as soon as `max_matches` are found without loading the entire file.
+    pub fn search(&self, pattern: &regex::Regex, max_matches: usize) -> Result<Vec<LogMatch>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = std::fs::File::open(&self.path)?;
+        let mut reader = BufReader::new(file);
+        let mut matches = Vec::new();
+        let mut idx = 0;
+        loop {
+            match read_one_frame(&mut reader) {
+                Ok(Some(frame)) => {
+                    if let Ok(text) = std::str::from_utf8(&frame.payload) {
+                        for line in text.lines() {
+                            if pattern.is_match(line) {
+                                matches.push(LogMatch {
+                                    frame_index: idx,
+                                    timestamp_ns: frame.timestamp_ns,
+                                    stream_type: frame.stream_type,
+                                    line: line.to_string(),
+                                });
+                                if matches.len() >= max_matches {
+                                    return Ok(matches);
+                                }
+                            }
+                        }
+                    }
+                    idx += 1;
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!("Error reading frame: {}", e);
+                    break;
                 }
             }
         }
@@ -270,9 +304,10 @@ impl LogReader {
         }
         let mut file = std::fs::File::open(&self.path)?;
         file.seek(SeekFrom::Start(offset))?;
+        let mut reader = BufReader::new(file);
         let mut frames = Vec::new();
         loop {
-            match read_one_frame(&mut file) {
+            match read_one_frame(&mut reader) {
                 Ok(Some(frame)) => frames.push(frame),
                 Ok(None) => break,
                 Err(e) => {
@@ -281,7 +316,7 @@ impl LogReader {
                 }
             }
         }
-        let new_offset = file.stream_position()?;
+        let new_offset = reader.stream_position()?;
         Ok((frames, new_offset))
     }
 
@@ -301,9 +336,9 @@ pub struct LogMatch {
     pub line: String,
 }
 
-fn read_one_frame(file: &mut std::fs::File) -> Result<Option<Frame>> {
+fn read_one_frame(reader: &mut impl Read) -> Result<Option<Frame>> {
     let mut header = [0u8; FRAME_HEADER_SIZE];
-    match file.read_exact(&mut header) {
+    match reader.read_exact(&mut header) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e.into()),
@@ -314,7 +349,7 @@ fn read_one_frame(file: &mut std::fs::File) -> Result<Option<Frame>> {
     let length = u32::from_le_bytes(header[9..13].try_into().unwrap()) as usize;
 
     let mut payload = vec![0u8; length];
-    file.read_exact(&mut payload)?;
+    reader.read_exact(&mut payload)?;
 
     Ok(Some(Frame {
         timestamp_ns,

@@ -53,9 +53,36 @@ impl LogWriter {
         super::permissions::set_file_restricted(&combined_path);
 
         let mut buffer_size: usize = 0;
+        let mut dirty_stdout = false;
+        let mut dirty_stderr = false;
+        let mut dirty_stdin = false;
         let flush_interval = tokio::time::Duration::from_millis(self.flush_interval_ms);
         let mut flush_timer = tokio::time::interval(flush_interval);
         flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        let flush_all = |stdout: &mut std::fs::File,
+                         stderr: &mut std::fs::File,
+                         stdin: &mut std::fs::File,
+                         combined: &mut std::fs::File,
+                         d_out: &mut bool,
+                         d_err: &mut bool,
+                         d_in: &mut bool|
+         -> std::io::Result<()> {
+            if *d_out {
+                stdout.flush()?;
+                *d_out = false;
+            }
+            if *d_err {
+                stderr.flush()?;
+                *d_err = false;
+            }
+            if *d_in {
+                stdin.flush()?;
+                *d_in = false;
+            }
+            combined.flush()?;
+            Ok(())
+        };
 
         loop {
             tokio::select! {
@@ -63,38 +90,42 @@ impl LogWriter {
                     match frame {
                         Some(frame) => {
                             let encoded = encode_frame(&frame);
-                            let stream_file = match frame.stream_type {
-                                StreamType::Stdout => &mut stdout_file,
-                                StreamType::Stderr => &mut stderr_file,
-                                StreamType::Stdin => &mut stdin_file,
+                            let (stream_file, dirty_flag) = match frame.stream_type {
+                                StreamType::Stdout => (&mut stdout_file, &mut dirty_stdout),
+                                StreamType::Stderr => (&mut stderr_file, &mut dirty_stderr),
+                                StreamType::Stdin => (&mut stdin_file, &mut dirty_stdin),
                             };
                             stream_file.write_all(&encoded)?;
                             combined_file.write_all(&encoded)?;
+                            *dirty_flag = true;
                             buffer_size += encoded.len() * 2;
 
                             if buffer_size >= self.flush_buffer_bytes {
-                                stdout_file.flush()?;
-                                stderr_file.flush()?;
-                                stdin_file.flush()?;
-                                combined_file.flush()?;
+                                flush_all(
+                                    &mut stdout_file, &mut stderr_file, &mut stdin_file,
+                                    &mut combined_file,
+                                    &mut dirty_stdout, &mut dirty_stderr, &mut dirty_stdin,
+                                )?;
                                 buffer_size = 0;
                             }
                         }
                         None => {
-                            stdout_file.flush()?;
-                            stderr_file.flush()?;
-                            stdin_file.flush()?;
-                            combined_file.flush()?;
+                            flush_all(
+                                &mut stdout_file, &mut stderr_file, &mut stdin_file,
+                                &mut combined_file,
+                                &mut dirty_stdout, &mut dirty_stderr, &mut dirty_stdin,
+                            )?;
                             break;
                         }
                     }
                 }
                 _ = flush_timer.tick() => {
                     if buffer_size > 0 {
-                        stdout_file.flush()?;
-                        stderr_file.flush()?;
-                        stdin_file.flush()?;
-                        combined_file.flush()?;
+                        flush_all(
+                            &mut stdout_file, &mut stderr_file, &mut stdin_file,
+                            &mut combined_file,
+                            &mut dirty_stdout, &mut dirty_stderr, &mut dirty_stdin,
+                        )?;
                         buffer_size = 0;
                     }
                 }

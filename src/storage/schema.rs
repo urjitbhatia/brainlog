@@ -60,12 +60,8 @@ const V1_SCHEMA: &str = "
 type MigrationFn = fn(&Connection) -> Result<()>;
 
 /// List of migrations, indexed by (from_version - 1). migrations[0] migrates v1 -> v2, etc.
-/// Currently empty since v1 is the initial version.
 fn migrations() -> Vec<MigrationFn> {
-    vec![
-        // When adding a migration from v1 -> v2, add a function here:
-        // migrate_v1_to_v2,
-    ]
+    vec![]
 }
 
 /// Initialize the database schema with version tracking.
@@ -165,18 +161,18 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn fresh_database_gets_version_1() {
+    fn fresh_database_gets_current_version() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
 
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, CURRENT_VERSION);
     }
 
     #[test]
-    fn opening_existing_v1_database_succeeds() {
+    fn opening_existing_database_succeeds() {
         let conn = Connection::open_in_memory().unwrap();
         initialize(&conn).unwrap();
 
@@ -186,7 +182,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, CURRENT_VERSION);
     }
 
     #[test]
@@ -236,7 +232,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, CURRENT_VERSION);
 
         // Verify original tables still exist
         for table in &["services", "runs", "tags", "ports"] {
@@ -282,11 +278,10 @@ mod tests {
         // Second call should succeed without error
         initialize(&conn).unwrap();
 
-        // Version should still be 1
         let version: i64 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, CURRENT_VERSION);
     }
 
     #[test]

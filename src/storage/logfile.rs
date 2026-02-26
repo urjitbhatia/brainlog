@@ -40,17 +40,14 @@ impl LogWriter {
         let stdout_path = self.log_dir.join("stdout.log");
         let stderr_path = self.log_dir.join("stderr.log");
         let stdin_path = self.log_dir.join("stdin.log");
-        let combined_path = self.log_dir.join("combined.log");
 
         let mut stdout_file = std::fs::File::create(&stdout_path)?;
         let mut stderr_file = std::fs::File::create(&stderr_path)?;
         let mut stdin_file = std::fs::File::create(&stdin_path)?;
-        let mut combined_file = std::fs::File::create(&combined_path)?;
 
         super::permissions::set_file_restricted(&stdout_path);
         super::permissions::set_file_restricted(&stderr_path);
         super::permissions::set_file_restricted(&stdin_path);
-        super::permissions::set_file_restricted(&combined_path);
 
         let mut buffer_size: usize = 0;
         let mut dirty_stdout = false;
@@ -63,7 +60,6 @@ impl LogWriter {
         let flush_all = |stdout: &mut std::fs::File,
                          stderr: &mut std::fs::File,
                          stdin: &mut std::fs::File,
-                         combined: &mut std::fs::File,
                          d_out: &mut bool,
                          d_err: &mut bool,
                          d_in: &mut bool|
@@ -80,7 +76,6 @@ impl LogWriter {
                 stdin.flush()?;
                 *d_in = false;
             }
-            combined.flush()?;
             Ok(())
         };
 
@@ -96,14 +91,12 @@ impl LogWriter {
                                 StreamType::Stdin => (&mut stdin_file, &mut dirty_stdin),
                             };
                             stream_file.write_all(&encoded)?;
-                            combined_file.write_all(&encoded)?;
                             *dirty_flag = true;
-                            buffer_size += encoded.len() * 2;
+                            buffer_size += encoded.len();
 
                             if buffer_size >= self.flush_buffer_bytes {
                                 flush_all(
                                     &mut stdout_file, &mut stderr_file, &mut stdin_file,
-                                    &mut combined_file,
                                     &mut dirty_stdout, &mut dirty_stderr, &mut dirty_stdin,
                                 )?;
                                 buffer_size = 0;
@@ -112,7 +105,6 @@ impl LogWriter {
                         None => {
                             flush_all(
                                 &mut stdout_file, &mut stderr_file, &mut stdin_file,
-                                &mut combined_file,
                                 &mut dirty_stdout, &mut dirty_stderr, &mut dirty_stdin,
                             )?;
                             break;
@@ -123,7 +115,6 @@ impl LogWriter {
                     if buffer_size > 0 {
                         flush_all(
                             &mut stdout_file, &mut stderr_file, &mut stdin_file,
-                            &mut combined_file,
                             &mut dirty_stdout, &mut dirty_stderr, &mut dirty_stdin,
                         )?;
                         buffer_size = 0;
@@ -146,41 +137,52 @@ fn encode_frame(frame: &Frame) -> Vec<u8> {
 }
 
 pub struct LogReader {
-    path: PathBuf,
+    log_dir: PathBuf,
+    stream: StreamFilter,
 }
+
+/// The three stream file paths used to reconstruct the combined view.
+const STREAM_FILES: [(&str, StreamFilter); 3] = [
+    ("stdout.log", StreamFilter::Stdout),
+    ("stderr.log", StreamFilter::Stderr),
+    ("stdin.log", StreamFilter::Stdin),
+];
 
 impl LogReader {
     pub fn new(log_dir: &Path, stream: StreamFilter) -> Self {
         Self {
-            path: log_dir.join(stream.log_filename()),
+            log_dir: log_dir.to_path_buf(),
+            stream,
         }
+    }
+
+    /// Returns the path for a single-stream file, or the legacy combined.log path.
+    fn single_stream_path(&self) -> PathBuf {
+        self.log_dir.join(self.stream.log_filename())
+    }
+
+    /// Whether this reader should use merge-sort (Combined mode without a legacy file).
+    pub fn uses_merge(&self) -> bool {
+        self.stream == StreamFilter::Combined && !self.log_dir.join("combined.log").exists()
     }
 
     pub fn read_frames(&self) -> Result<Vec<Frame>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
+        if self.uses_merge() {
+            return self.merge_read_frames();
         }
-        let file = std::fs::File::open(&self.path)?;
-        let mut reader = BufReader::new(file);
-        let mut frames = Vec::new();
-        loop {
-            match read_one_frame(&mut reader) {
-                Ok(Some(frame)) => frames.push(frame),
-                Ok(None) => break,
-                Err(e) => {
-                    tracing::warn!("Error reading frame: {}", e);
-                    break;
-                }
-            }
-        }
-        Ok(frames)
+        let path = self.single_stream_path();
+        read_all_frames_from_file(&path)
     }
 
     pub fn read_head(&self, n: usize) -> Result<Vec<Frame>> {
-        if !self.path.exists() {
+        if self.uses_merge() {
+            return self.merge_read_head(n);
+        }
+        let path = self.single_stream_path();
+        if !path.exists() {
             return Ok(Vec::new());
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&path)?;
         let mut reader = BufReader::new(file);
         let mut frames = Vec::with_capacity(n);
         for _ in 0..n {
@@ -197,10 +199,14 @@ impl LogReader {
     }
 
     pub fn read_tail(&self, n: usize) -> Result<Vec<Frame>> {
-        if !self.path.exists() {
+        if self.uses_merge() {
+            return self.merge_read_tail(n);
+        }
+        let path = self.single_stream_path();
+        if !path.exists() {
             return Ok(Vec::new());
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&path)?;
         let mut reader = BufReader::new(file);
         let mut ring = VecDeque::with_capacity(n + 1);
         loop {
@@ -224,10 +230,14 @@ impl LogReader {
     /// Read frames within a time range, streaming frame-by-frame.
     /// Skips frames before `start_time` and stops early after `end_time`.
     pub fn read_range(&self, start_time: Option<u64>, end_time: Option<u64>) -> Result<Vec<Frame>> {
-        if !self.path.exists() {
+        if self.uses_merge() {
+            return self.merge_read_range(start_time, end_time);
+        }
+        let path = self.single_stream_path();
+        if !path.exists() {
             return Ok(Vec::new());
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&path)?;
         let mut reader = BufReader::new(file);
         let mut frames = Vec::new();
         loop {
@@ -258,10 +268,14 @@ impl LogReader {
     /// Search log frames for a pattern, streaming frame-by-frame.
     /// Stops as soon as `max_matches` are found without loading the entire file.
     pub fn search(&self, pattern: &regex::Regex, max_matches: usize) -> Result<Vec<LogMatch>> {
-        if !self.path.exists() {
+        if self.uses_merge() {
+            return self.merge_search(pattern, max_matches);
+        }
+        let path = self.single_stream_path();
+        if !path.exists() {
             return Ok(Vec::new());
         }
-        let file = std::fs::File::open(&self.path)?;
+        let file = std::fs::File::open(&path)?;
         let mut reader = BufReader::new(file);
         let mut matches = Vec::new();
         let mut idx = 0;
@@ -298,11 +312,22 @@ impl LogReader {
     /// Read frames starting from a byte offset. Returns the frames read and the
     /// new byte offset (i.e. the position after the last successfully read frame).
     /// This enables incremental reads for follow/tail -f style use cases.
+    ///
+    /// For combined mode without a legacy `combined.log`, this method is not
+    /// supported (combined follow mode should use `read_frames_since` instead).
+    /// It returns an empty result in that case.
     pub fn read_frames_from_offset(&self, offset: u64) -> Result<(Vec<Frame>, u64)> {
-        if !self.path.exists() {
+        let path = if self.uses_merge() {
+            // Offset-based reading is not meaningful for merge-sorted combined mode.
+            // Callers should use read_frames_since() instead.
+            return Ok((Vec::new(), offset));
+        } else {
+            self.single_stream_path()
+        };
+        if !path.exists() {
             return Ok((Vec::new(), offset));
         }
-        let mut file = std::fs::File::open(&self.path)?;
+        let mut file = std::fs::File::open(&path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut reader = BufReader::new(file);
         let mut frames = Vec::new();
@@ -320,11 +345,163 @@ impl LogReader {
         Ok((frames, new_offset))
     }
 
+    /// Read frames with timestamp strictly greater than `after_ns` from the
+    /// appropriate stream files. For combined mode this reads from all three
+    /// stream files and merge-sorts. For single-stream mode it reads from just
+    /// that stream file. This is the preferred method for follow/poll use cases
+    /// where combined mode is needed.
+    pub fn read_frames_since(&self, after_ns: u64) -> Result<Vec<Frame>> {
+        self.read_range(Some(after_ns + 1), None)
+    }
+
     pub fn file_size(&self) -> Result<u64> {
-        if !self.path.exists() {
+        if self.uses_merge() {
+            let mut total = 0u64;
+            for (filename, _) in &STREAM_FILES {
+                let p = self.log_dir.join(filename);
+                if p.exists() {
+                    total += std::fs::metadata(&p)?.len();
+                }
+            }
+            return Ok(total);
+        }
+        let path = self.single_stream_path();
+        if !path.exists() {
             return Ok(0);
         }
-        Ok(std::fs::metadata(&self.path)?.len())
+        Ok(std::fs::metadata(&path)?.len())
+    }
+
+    // ── Merge-sort implementations for Combined mode ──────────────────
+
+    /// Read all frames from all three stream files and merge-sort by timestamp.
+    fn merge_read_frames(&self) -> Result<Vec<Frame>> {
+        let mut all_frames = Vec::new();
+        for (filename, _) in &STREAM_FILES {
+            let path = self.log_dir.join(filename);
+            all_frames.extend(read_all_frames_from_file(&path)?);
+        }
+        all_frames.sort_by_key(|f| f.timestamp_ns);
+        Ok(all_frames)
+    }
+
+    /// 3-way merge taking only the first `n` frames by timestamp.
+    fn merge_read_head(&self, n: usize) -> Result<Vec<Frame>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        // Open iterators for each stream file
+        let mut iters: Vec<std::iter::Peekable<std::vec::IntoIter<Frame>>> = Vec::new();
+        for (filename, _) in &STREAM_FILES {
+            let path = self.log_dir.join(filename);
+            let frames = read_all_frames_from_file(&path)?;
+            iters.push(frames.into_iter().peekable());
+        }
+
+        let mut result = Vec::with_capacity(n);
+        for _ in 0..n {
+            // Find the iterator with the smallest next timestamp
+            let mut best_idx: Option<usize> = None;
+            let mut best_ts = u64::MAX;
+            for (i, iter) in iters.iter_mut().enumerate() {
+                if let Some(frame) = iter.peek() {
+                    if frame.timestamp_ns < best_ts {
+                        best_ts = frame.timestamp_ns;
+                        best_idx = Some(i);
+                    }
+                }
+            }
+            match best_idx {
+                Some(idx) => result.push(iters[idx].next().unwrap()),
+                None => break, // All iterators exhausted
+            }
+        }
+        Ok(result)
+    }
+
+    /// Read all frames from all three files, merge-sort, take last `n`.
+    fn merge_read_tail(&self, n: usize) -> Result<Vec<Frame>> {
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let mut all_frames = self.merge_read_frames()?;
+        let skip = all_frames.len().saturating_sub(n);
+        Ok(all_frames.split_off(skip))
+    }
+
+    /// Read all three stream files, merge-sort, then filter by time range.
+    fn merge_read_range(
+        &self,
+        start_time: Option<u64>,
+        end_time: Option<u64>,
+    ) -> Result<Vec<Frame>> {
+        // Each stream file is already sorted by timestamp, so we can do a
+        // 3-way merge with early termination on end_time.
+        let mut iters: Vec<std::iter::Peekable<std::vec::IntoIter<Frame>>> = Vec::new();
+        for (filename, _) in &STREAM_FILES {
+            let path = self.log_dir.join(filename);
+            let frames = read_all_frames_from_file(&path)?;
+            iters.push(frames.into_iter().peekable());
+        }
+
+        let mut result = Vec::new();
+        loop {
+            let mut best_idx: Option<usize> = None;
+            let mut best_ts = u64::MAX;
+            for (i, iter) in iters.iter_mut().enumerate() {
+                if let Some(frame) = iter.peek() {
+                    if frame.timestamp_ns < best_ts {
+                        best_ts = frame.timestamp_ns;
+                        best_idx = Some(i);
+                    }
+                }
+            }
+            match best_idx {
+                Some(idx) => {
+                    let frame = iters[idx].next().unwrap();
+                    if let Some(end) = end_time {
+                        if frame.timestamp_ns > end {
+                            break;
+                        }
+                    }
+                    if let Some(start) = start_time {
+                        if frame.timestamp_ns < start {
+                            continue;
+                        }
+                    }
+                    result.push(frame);
+                }
+                None => break,
+            }
+        }
+        Ok(result)
+    }
+
+    /// Search all three stream files, merge results by timestamp, limit to max_matches.
+    fn merge_search(&self, pattern: &regex::Regex, max_matches: usize) -> Result<Vec<LogMatch>> {
+        // Collect matches from each stream, then merge by timestamp.
+        let mut all_matches = Vec::new();
+        for (filename, _) in &STREAM_FILES {
+            let path = self.log_dir.join(filename);
+            let frames = read_all_frames_from_file(&path)?;
+            for (idx, frame) in frames.iter().enumerate() {
+                if let Ok(text) = std::str::from_utf8(&frame.payload) {
+                    for line in text.lines() {
+                        if pattern.is_match(line) {
+                            all_matches.push(LogMatch {
+                                frame_index: idx,
+                                timestamp_ns: frame.timestamp_ns,
+                                stream_type: frame.stream_type,
+                                line: line.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        all_matches.sort_by_key(|m| m.timestamp_ns);
+        all_matches.truncate(max_matches);
+        Ok(all_matches)
     }
 }
 
@@ -334,6 +511,37 @@ pub struct LogMatch {
     pub timestamp_ns: u64,
     pub stream_type: StreamType,
     pub line: String,
+}
+
+impl serde::Serialize for LogMatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("LogMatch", 4)?;
+        state.serialize_field("frame_index", &self.frame_index)?;
+        state.serialize_field("timestamp_ns", &self.timestamp_ns)?;
+        state.serialize_field("stream", self.stream_type.as_str())?;
+        state.serialize_field("line", &self.line)?;
+        state.end()
+    }
+}
+
+/// A JSON-serializable representation of a log frame.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct JsonFrame {
+    pub timestamp_ns: u64,
+    pub stream: String,
+    pub text: String,
+}
+
+impl JsonFrame {
+    /// Convert a `Frame` to a `JsonFrame`, decoding the payload as UTF-8 (lossy).
+    pub fn from_frame(frame: &Frame) -> Self {
+        Self {
+            timestamp_ns: frame.timestamp_ns,
+            stream: frame.stream_type.as_str().to_string(),
+            text: String::from_utf8_lossy(&frame.payload).into_owned(),
+        }
+    }
 }
 
 fn read_one_frame(reader: &mut impl Read) -> Result<Option<Frame>> {
@@ -358,19 +566,50 @@ fn read_one_frame(reader: &mut impl Read) -> Result<Option<Frame>> {
     }))
 }
 
+/// Read all frames from a single file. Returns an empty vec if the file does not exist.
+fn read_all_frames_from_file(path: &Path) -> Result<Vec<Frame>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut frames = Vec::new();
+    loop {
+        match read_one_frame(&mut reader) {
+            Ok(Some(frame)) => frames.push(frame),
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!("Error reading frame: {}", e);
+                break;
+            }
+        }
+    }
+    Ok(frames)
+}
+
 /// Returns (stdout, stderr, stdin, combined) file sizes in bytes for a log directory.
+/// For new runs without a `combined.log`, the combined size is the sum of all three
+/// stream files.
 pub fn log_sizes(log_dir: &Path) -> (u64, u64, u64, u64) {
     let size = |name: &str| -> u64 {
         std::fs::metadata(log_dir.join(name))
             .map(|m| m.len())
             .unwrap_or(0)
     };
-    (
-        size("stdout.log"),
-        size("stderr.log"),
-        size("stdin.log"),
-        size("combined.log"),
-    )
+    let stdout_sz = size("stdout.log");
+    let stderr_sz = size("stderr.log");
+    let stdin_sz = size("stdin.log");
+    // For old runs, combined.log exists and we report its actual size.
+    // For new runs, report the sum of the three stream files.
+    let combined_sz = {
+        let legacy = size("combined.log");
+        if legacy > 0 {
+            legacy
+        } else {
+            stdout_sz + stderr_sz + stdin_sz
+        }
+    };
+    (stdout_sz, stderr_sz, stdin_sz, combined_sz)
 }
 
 pub fn frames_to_text(frames: &[Frame]) -> String {
@@ -467,10 +706,24 @@ mod tests {
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 1);
 
-        // Read combined
+        // Read combined (merge-sorted from three stream files, no combined.log)
+        assert!(
+            !dir.path().join("combined.log").exists(),
+            "combined.log should not be created by new writer"
+        );
         let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        assert!(reader.uses_merge(), "should use merge-sort for new runs");
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 4);
+        // Verify merge-sort order: timestamps 1000, 2000, 3000, 4000
+        assert_eq!(frames[0].timestamp_ns, 1000);
+        assert_eq!(frames[0].payload, b"out1\n");
+        assert_eq!(frames[1].timestamp_ns, 2000);
+        assert_eq!(frames[1].payload, b"err1\n");
+        assert_eq!(frames[2].timestamp_ns, 3000);
+        assert_eq!(frames[2].payload, b"in1\n");
+        assert_eq!(frames[3].timestamp_ns, 4000);
+        assert_eq!(frames[3].payload, b"out2\n");
     }
 
     #[tokio::test]
@@ -579,7 +832,9 @@ mod tests {
         assert!(stdout_sz > 0);
         assert!(stderr_sz > 0);
         assert_eq!(stdin_sz, 0); // file created but no stdin frames written
-        assert!(combined_sz > 0);
+
+        // No combined.log for new runs; combined_sz is the sum of stream files.
+        assert_eq!(combined_sz, stdout_sz + stderr_sz + stdin_sz);
     }
 
     #[test]
@@ -935,5 +1190,183 @@ mod tests {
                 assert_eq!(t.stream_type, e.stream_type);
             }
         }
+    }
+
+    // ── Combined merge-sort tests ─────────────────────────────────────
+
+    /// Helper: set up a directory with separate stream files (no combined.log)
+    /// to test merge-sort behaviour.
+    fn setup_merge_dir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        // stdout: ts 100, 300, 500
+        write_frames_to_file(
+            &dir.path().join("stdout.log"),
+            &[
+                make_frame(StreamType::Stdout, b"out1\n", 100),
+                make_frame(StreamType::Stdout, b"out2\n", 300),
+                make_frame(StreamType::Stdout, b"out3\n", 500),
+            ],
+        );
+        // stderr: ts 200, 400
+        write_frames_to_file(
+            &dir.path().join("stderr.log"),
+            &[
+                make_frame(StreamType::Stderr, b"err1\n", 200),
+                make_frame(StreamType::Stderr, b"err2\n", 400),
+            ],
+        );
+        // stdin: ts 150
+        write_frames_to_file(
+            &dir.path().join("stdin.log"),
+            &[make_frame(StreamType::Stdin, b"in1\n", 150)],
+        );
+        dir
+    }
+
+    #[test]
+    fn combined_merge_read_frames() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        assert!(reader.uses_merge());
+        let frames = reader.read_frames().unwrap();
+        assert_eq!(frames.len(), 6);
+        // Should be sorted by timestamp: 100, 150, 200, 300, 400, 500
+        let timestamps: Vec<u64> = frames.iter().map(|f| f.timestamp_ns).collect();
+        assert_eq!(timestamps, vec![100, 150, 200, 300, 400, 500]);
+    }
+
+    #[test]
+    fn combined_merge_read_head() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        let head = reader.read_head(3).unwrap();
+        assert_eq!(head.len(), 3);
+        assert_eq!(head[0].timestamp_ns, 100);
+        assert_eq!(head[0].payload, b"out1\n");
+        assert_eq!(head[1].timestamp_ns, 150);
+        assert_eq!(head[1].payload, b"in1\n");
+        assert_eq!(head[2].timestamp_ns, 200);
+        assert_eq!(head[2].payload, b"err1\n");
+    }
+
+    #[test]
+    fn combined_merge_read_tail() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        let tail = reader.read_tail(2).unwrap();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].timestamp_ns, 400);
+        assert_eq!(tail[1].timestamp_ns, 500);
+    }
+
+    #[test]
+    fn combined_merge_read_range() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        let range = reader.read_range(Some(150), Some(400)).unwrap();
+        assert_eq!(range.len(), 4); // ts 150, 200, 300, 400
+        let timestamps: Vec<u64> = range.iter().map(|f| f.timestamp_ns).collect();
+        assert_eq!(timestamps, vec![150, 200, 300, 400]);
+    }
+
+    #[test]
+    fn combined_merge_search() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        let pattern = regex::Regex::new("err").unwrap();
+        let matches = reader.search(&pattern, 10).unwrap();
+        assert_eq!(matches.len(), 2);
+        // Results should be sorted by timestamp
+        assert_eq!(matches[0].timestamp_ns, 200);
+        assert_eq!(matches[1].timestamp_ns, 400);
+    }
+
+    #[test]
+    fn combined_merge_file_size() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        let stdout_sz = LogReader::new(dir.path(), StreamFilter::Stdout)
+            .file_size()
+            .unwrap();
+        let stderr_sz = LogReader::new(dir.path(), StreamFilter::Stderr)
+            .file_size()
+            .unwrap();
+        let stdin_sz = LogReader::new(dir.path(), StreamFilter::Stdin)
+            .file_size()
+            .unwrap();
+        assert_eq!(
+            reader.file_size().unwrap(),
+            stdout_sz + stderr_sz + stdin_sz
+        );
+    }
+
+    #[test]
+    fn combined_merge_read_frames_since() {
+        let dir = setup_merge_dir();
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        let frames = reader.read_frames_since(200).unwrap();
+        assert_eq!(frames.len(), 3); // ts 300, 400, 500
+        let timestamps: Vec<u64> = frames.iter().map(|f| f.timestamp_ns).collect();
+        assert_eq!(timestamps, vec![300, 400, 500]);
+    }
+
+    #[test]
+    fn combined_merge_empty_streams() {
+        let dir = TempDir::new().unwrap();
+        // Create empty stream files
+        write_frames_to_file(&dir.path().join("stdout.log"), &[]);
+        write_frames_to_file(&dir.path().join("stderr.log"), &[]);
+        write_frames_to_file(&dir.path().join("stdin.log"), &[]);
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        assert!(reader.uses_merge());
+        assert_eq!(reader.read_frames().unwrap().len(), 0);
+        assert_eq!(reader.read_head(5).unwrap().len(), 0);
+        assert_eq!(reader.read_tail(5).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn combined_merge_missing_stream_files() {
+        let dir = TempDir::new().unwrap();
+        // Only create stdout, leave others missing
+        write_frames_to_file(
+            &dir.path().join("stdout.log"),
+            &[make_frame(StreamType::Stdout, b"hello\n", 100)],
+        );
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        assert!(reader.uses_merge());
+        let frames = reader.read_frames().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].payload, b"hello\n");
+    }
+
+    #[test]
+    fn legacy_combined_log_backward_compat() {
+        let dir = TempDir::new().unwrap();
+        // Write stream files
+        write_frames_to_file(
+            &dir.path().join("stdout.log"),
+            &[make_frame(StreamType::Stdout, b"out\n", 100)],
+        );
+        write_frames_to_file(
+            &dir.path().join("stderr.log"),
+            &[make_frame(StreamType::Stderr, b"err\n", 200)],
+        );
+        write_frames_to_file(&dir.path().join("stdin.log"), &[]);
+        // Write legacy combined.log (simulating old-format runs)
+        write_frames_to_file(
+            &dir.path().join("combined.log"),
+            &[
+                make_frame(StreamType::Stdout, b"out\n", 100),
+                make_frame(StreamType::Stderr, b"err\n", 200),
+            ],
+        );
+
+        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
+        // Should NOT use merge — legacy combined.log exists
+        assert!(!reader.uses_merge());
+        let frames = reader.read_frames().unwrap();
+        assert_eq!(frames.len(), 2);
     }
 }

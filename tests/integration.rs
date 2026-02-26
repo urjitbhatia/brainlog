@@ -143,8 +143,8 @@ fn run_creates_log_files() {
         "stdin.log should exist"
     );
     assert!(
-        log_path.join("combined.log").exists(),
-        "combined.log should exist"
+        !log_path.join("combined.log").exists(),
+        "combined.log should no longer be written (redundant storage removed)"
     );
 
     // stdout.log should have nonzero size (echo wrote output)

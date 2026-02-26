@@ -665,6 +665,17 @@ pub struct ServiceMetadataMatch {
     pub status: String,
 }
 
+impl serde::Serialize for ServiceMetadataMatch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ServiceMetadataMatch", 3)?;
+        state.serialize_field("service", &self.service)?;
+        state.serialize_field("matched_fields", &self.matched_fields)?;
+        state.serialize_field("status", &self.status)?;
+        state.end()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

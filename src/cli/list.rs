@@ -1,5 +1,6 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
+use serde::Serialize;
 use std::io::IsTerminal;
 use std::path::Path;
 
@@ -7,6 +8,35 @@ use crate::cli::ListArgs;
 use crate::config::Config;
 use crate::storage::logfile::log_sizes;
 use crate::storage::Database;
+
+/// JSON output struct for a service in the list command.
+#[derive(Serialize)]
+struct ServiceJson {
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    executable: String,
+    command_line: Vec<String>,
+    working_dir: String,
+    created_at: String,
+    tags: Vec<TagJson>,
+    latest_run: Option<RunJson>,
+    ports: Vec<u16>,
+}
+
+#[derive(Serialize)]
+struct TagJson {
+    key: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct RunJson {
+    id: String,
+    status: String,
+    started_at: String,
+    exit_code: Option<i32>,
+}
 
 /// Whether stdout is a terminal (cached once per call).
 fn stdout_is_tty() -> bool {
@@ -77,6 +107,51 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     } else {
         db.list_services()?
     };
+
+    if args.json {
+        let mut json_services = Vec::new();
+        for service in &services {
+            let tags = db.get_tags(&service.id)?;
+            let tag_json: Vec<TagJson> = tags
+                .iter()
+                .map(|t| TagJson {
+                    key: t.key.clone(),
+                    value: t.value.clone(),
+                })
+                .collect();
+
+            let (latest_run, ports) = if let Some(run) = db.get_latest_run(&service.id)? {
+                let run_ports = db.get_ports(&run.id)?;
+                let port_nums: Vec<u16> = run_ports.iter().map(|p| p.port).collect();
+                (
+                    Some(RunJson {
+                        id: run.id.clone(),
+                        status: run.status.as_str().to_string(),
+                        started_at: run.started_at.to_rfc3339(),
+                        exit_code: run.exit_code,
+                    }),
+                    port_nums,
+                )
+            } else {
+                (None, Vec::new())
+            };
+
+            json_services.push(ServiceJson {
+                id: service.id.clone(),
+                name: service.name.clone(),
+                description: service.description.clone(),
+                executable: service.executable.clone(),
+                command_line: service.command_line.clone(),
+                working_dir: service.working_dir.clone(),
+                created_at: service.created_at.to_rfc3339(),
+                tags: tag_json,
+                latest_run,
+                ports,
+            });
+        }
+        println!("{}", serde_json::to_string_pretty(&json_services)?);
+        return Ok(());
+    }
 
     if services.is_empty() {
         println!("No services found.");
@@ -232,6 +307,11 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
     } else {
         groups
     };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&groups)?);
+        return Ok(());
+    }
 
     if groups.is_empty() {
         println!("No services found.");

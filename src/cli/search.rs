@@ -1,11 +1,21 @@
 use anyhow::Result;
 use regex::Regex;
+use serde::Serialize;
 use std::path::Path;
 
 use crate::cli::SearchArgs;
 use crate::config::Config;
 use crate::storage::logfile::LogReader;
 use crate::storage::Database;
+
+/// JSON output for the search command.
+#[derive(Serialize)]
+struct SearchResultJson {
+    metadata_matches: Vec<crate::storage::db::ServiceMetadataMatch>,
+    log_matches: Vec<crate::storage::logfile::LogMatch>,
+    total_metadata_matches: usize,
+    total_log_matches: usize,
+}
 
 pub async fn handle_search(args: SearchArgs) -> Result<()> {
     let config = Config::load()?;
@@ -45,6 +55,34 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
     };
 
     let mut total_log_matches = 0;
+    let mut all_log_matches = Vec::new();
+
+    for service in &services {
+        let runs = db.list_runs(&service.id)?;
+        for run in &runs {
+            let reader = LogReader::new(Path::new(&run.log_dir), args.stream);
+            let remaining = args.max_matches.saturating_sub(total_log_matches);
+            if remaining == 0 {
+                break;
+            }
+            let matches = reader.search(&pattern, remaining)?;
+            total_log_matches += matches.len();
+            all_log_matches.extend(matches);
+        }
+    }
+
+    if args.json {
+        let result = SearchResultJson {
+            total_metadata_matches: metadata_matches.len(),
+            total_log_matches,
+            metadata_matches,
+            log_matches: all_log_matches,
+        };
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        return Ok(());
+    }
+
+    // --- Text output (existing behaviour) ---
 
     // Print metadata section if we have metadata matches
     let has_metadata = !metadata_matches.is_empty();
@@ -64,13 +102,13 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
         println!();
     }
 
-    // Collect log matches
+    // Build text output for log matches
     let mut log_output = Vec::new();
     for service in &services {
         let runs = db.list_runs(&service.id)?;
         for run in &runs {
             let reader = LogReader::new(Path::new(&run.log_dir), args.stream);
-            let remaining = args.max_matches.saturating_sub(total_log_matches);
+            let remaining = args.max_matches.saturating_sub(log_output.len());
             if remaining == 0 {
                 break;
             }
@@ -86,7 +124,6 @@ pub async fn handle_search(args: SearchArgs) -> Result<()> {
                     dt.format("%H:%M:%S UTC"),
                     m.line
                 ));
-                total_log_matches += 1;
             }
         }
     }

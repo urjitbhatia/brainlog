@@ -124,6 +124,10 @@ pub struct ListArgs {
     /// Group services by executable and working directory
     #[arg(short, long)]
     pub group: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -146,6 +150,10 @@ pub struct LogsArgs {
     /// Stream to view: stdout, stderr, stdin, combined
     #[arg(short, long, value_enum, default_value_t = StreamFilter::Combined)]
     pub stream: StreamFilter,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -168,6 +176,10 @@ pub struct SearchArgs {
     /// Only search log content (skip service metadata matching)
     #[arg(long)]
     pub logs_only: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Debug)]

@@ -207,7 +207,7 @@ impl fmt::Display for LogMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ServiceGroup {
     pub executable: String,
     pub working_dir: String,

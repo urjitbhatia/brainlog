@@ -126,7 +126,25 @@ impl ServerHandler for BrainlogMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Brainlog MCP server. Brainlog wraps commands (build tools, dev servers, scripts, etc.) and captures their stdout, stderr, and stdin. Use these tools to discover tracked commands, read their output, and search across all captured output."
+                concat!(
+                    "Brainlog MCP server. Brainlog wraps commands (build tools, dev servers, scripts, etc.) ",
+                    "and captures their stdout, stderr, and stdin in real time. Use these tools to see what ",
+                    "commands have printed without asking the user to copy-paste terminal output.\n\n",
+                    "WHEN TO USE:\n",
+                    "- A build, test, or script is running and you need to check its output or errors\n",
+                    "- You started a server/process and need to confirm it's ready (use wait_for_pattern)\n",
+                    "- Something failed and you want to read the error output\n",
+                    "- You need to search across multiple commands for a pattern (e.g. 'error', 'panic', a port number)\n\n",
+                    "WORKFLOW:\n",
+                    "1. discover_services — find what commands are tracked, see their status\n",
+                    "2. get_logs — read stdout/stderr of a specific command (tail, head, or time range)\n",
+                    "3. search_logs — grep across all commands with regex\n",
+                    "4. wait_for_pattern — block until expected output appears (e.g. 'listening on port 3000')\n\n",
+                    "TIPS:\n",
+                    "- Use get_logs with stream='stderr' to focus on errors\n",
+                    "- Use since parameter for incremental polling (only new output since last check)\n",
+                    "- After running a command via Bash, use wait_for_pattern to confirm it started successfully",
+                )
                     .into(),
             ),
             capabilities: ServerCapabilities::builder()

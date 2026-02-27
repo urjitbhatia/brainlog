@@ -441,8 +441,9 @@ pub struct KillServiceResolved {
     pub early_response: Option<KillServiceResponse>,
 }
 
-pub enum KillTarget {
-    ChildPid(u32),
+pub struct KillTarget {
+    pub child_pid: u32,
+    pub wrapper_pid: Option<u32>,
 }
 
 /// Phase 1: synchronously resolve service, run, and PID info (Database is not Sync).
@@ -514,14 +515,17 @@ pub fn kill_service_resolve(
         service_name,
         service_id: service.id,
         signal: sig,
-        target: Some(KillTarget::ChildPid(pid)),
+        target: Some(KillTarget {
+            child_pid: pid,
+            wrapper_pid: run.wrapper_pid,
+        }),
         early_response: None,
     })
 }
 
 /// Phase 2: async kill (collect process tree, send signals). No &Database needed.
 pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceResponse> {
-    use crate::cli::kill::collect_process_tree;
+    use crate::cli::kill::{collect_process_tree, is_process_alive};
     use nix::sys::signal;
     use nix::unistd::Pid;
 
@@ -530,10 +534,11 @@ pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceRe
         return Ok(resp);
     }
 
-    let pid = match resolved.target {
-        Some(KillTarget::ChildPid(pid)) => pid,
+    let target = match resolved.target {
+        Some(t) => t,
         None => anyhow::bail!("No target PID to kill"),
     };
+    let pid = target.child_pid;
 
     let tree = collect_process_tree(pid).await;
 
@@ -547,6 +552,14 @@ pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceRe
         let nix_pid = Pid::from_raw(*target_pid as i32);
         if signal::kill(nix_pid, resolved.signal).is_ok() {
             signaled.push(*target_pid);
+        }
+    }
+
+    // Also signal the wrapper to prevent auto-restart and trigger clean shutdown
+    if let Some(wrapper_pid) = target.wrapper_pid {
+        if wrapper_pid != pid && is_process_alive(wrapper_pid) {
+            let nix_pid = Pid::from_raw(wrapper_pid as i32);
+            let _ = signal::kill(nix_pid, nix::sys::signal::Signal::SIGTERM);
         }
     }
 

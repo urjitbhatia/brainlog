@@ -74,6 +74,14 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         }
     }
 
+    // Also signal the wrapper to prevent auto-restart and trigger clean shutdown
+    if let Some(wrapper_pid) = run.wrapper_pid {
+        if wrapper_pid != pid && is_process_alive(wrapper_pid) {
+            let nix_pid = Pid::from_raw(wrapper_pid as i32);
+            let _ = signal::kill(nix_pid, Signal::SIGTERM);
+        }
+    }
+
     let signal_name = format!("{}", signal);
     let tty = std::io::stdout().is_terminal();
     if kill_order.len() == 1 {

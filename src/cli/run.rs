@@ -362,6 +362,9 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         let status = if will_restart_manual {
             // Killed by SIGUSR1-triggered restart — not a failure
             RunStatus::Completed
+        } else if stop_requested.load(Ordering::SeqCst) && exit_code != 0 {
+            // Killed externally (SIGTERM/SIGINT sent to wrapper) — intentional stop
+            RunStatus::Killed
         } else if exit_code == 0 {
             RunStatus::Completed
         } else {

@@ -65,6 +65,7 @@ fn colour_status(status: &str, is_tty: bool) -> String {
         "restarting" => format!("{}", status.yellow()),
         "completed" => format!("{}", status.dimmed()),
         "failed" => format!("{}", status.red()),
+        "killed" => format!("{}", status.yellow()),
         _ => format!("{}", status.dimmed()),
     }
 }

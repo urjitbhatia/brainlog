@@ -65,6 +65,7 @@ pub enum RunStatus {
     Completed,
     Failed,
     Crashed,
+    Killed,
 }
 
 impl RunStatus {
@@ -74,6 +75,7 @@ impl RunStatus {
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Crashed => "crashed",
+            Self::Killed => "killed",
         }
     }
 
@@ -82,6 +84,7 @@ impl RunStatus {
             "completed" => Self::Completed,
             "failed" => Self::Failed,
             "crashed" => Self::Crashed,
+            "killed" => Self::Killed,
             _ => Self::Running,
         }
     }
@@ -248,6 +251,7 @@ mod tests {
             ("completed", RunStatus::Completed),
             ("failed", RunStatus::Failed),
             ("crashed", RunStatus::Crashed),
+            ("killed", RunStatus::Killed),
         ] {
             let status = RunStatus::parse(s);
             assert_eq!(status, expected);

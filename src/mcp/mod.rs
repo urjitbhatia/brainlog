@@ -37,9 +37,27 @@ impl BrainlogMcp {
         })
     }
 
+    /// List recent runs across all tracked commands, newest first.
+    #[tool(
+        description = "List the most recent runs across ALL tracked commands, sorted newest first. Unlike discover_services (which groups by service), this returns individual runs with service metadata inlined — ideal for 'what just happened?' queries.\n\nReturns: run_id, service_id, service_name, executable, command_line, working_dir, status, started_at, ended_at, exit_code, pid, and optional log_preview.\n\nFilters: cwd (working directory substring), command (command line substring), exit_code (exact match, e.g. 0 or 1), status (running|completed|failed|crashed|killed). Use tail_lines to include a preview of recent output. Use limit to cap results (default 20)."
+    )]
+    fn list_recent_runs(
+        &self,
+        params: Parameters<ListRecentRunsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self.open_db()?;
+        let response = tools::list_recent_runs(&db, params.0).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("{}", e).into(),
+            data: None,
+        })?;
+        let json = serde_json::to_string(&response).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     /// Discover tracked commands.
     #[tool(
-        description = "List commands tracked by brainlog. Brainlog wraps any command (build tools, dev servers, scripts, long-running services) and captures their stdout, stderr, and stdin. Use this tool to discover what commands are being tracked so you can read their output.\n\nReturns: command name, executable, working directory, full command line, latest run info (status, PID, exit code, timestamps), detected TCP ports, and optional log preview.\n\nFilters: name (substring), tags (key:value format, AND logic), port (exact u16), executable (substring), cwd (substring of working directory), status (running|completed|failed), query (semantic search via LLM).\n\nResults are grouped by executable+working_dir by default (set group=false for flat list). Use tail_lines to include a preview of recent stdout/stderr output. Use limit to cap results (default 20)."
+        description = "List commands tracked by brainlog. Brainlog wraps any command (build tools, dev servers, scripts, long-running services) and captures their stdout, stderr, and stdin. Use this tool to discover what commands are being tracked so you can read their output.\n\nReturns: command name, executable, working directory, full command line, latest run info (status, PID, exit code, timestamps), detected TCP ports, and optional log preview.\n\nFilters: name (substring), tags (key:value format, AND logic), port (exact u16), executable (substring), cwd (substring of working directory), status (running|completed|failed), exit_code (exact match on latest run's exit code, e.g. 0 for success, 1 for failure), query (semantic search via LLM).\n\nResults are grouped by executable+working_dir by default (set group=false for flat list). Use tail_lines to include a preview of recent stdout/stderr output. Use limit to cap results (default 20)."
     )]
     async fn discover_services(
         &self,
@@ -57,7 +75,7 @@ impl BrainlogMcp {
 
     /// Read stdout/stderr output of a tracked command.
     #[tool(
-        description = "Read the stdout, stderr, or stdin output of a command tracked by brainlog. Use this to see what a command has printed — build output, server logs, error messages, etc. The id parameter accepts a command name, command ID, or run ID (prefix match supported).\n\nModes: tail (default, last N lines), head (first N lines), range (by timestamp). Stream: combined (default), stdout, stderr, stdin.\n\nUse since (nanoseconds since epoch) for incremental polling — pass the timestamp of your last-seen frame to get only newer output. Use max_bytes to limit response size (default 51200). ANSI escape codes are stripped by default (set strip_ansi=false to preserve)."
+        description = "Read the stdout, stderr, or stdin output of a command tracked by brainlog. Use this to see what a command has printed — build output, server logs, error messages, etc.\n\nIdentification: Provide EITHER id (command name, command ID, or run ID with prefix match) OR cwd (working directory substring to find the most recent run in that directory). Using cwd avoids a discover_services round-trip when you know the project path.\n\nModes: tail (default, last N lines), head (first N lines), range (by timestamp). Stream: combined (default), stdout, stderr, stdin.\n\nUse since (nanoseconds since epoch) for incremental polling — pass the timestamp of your last-seen frame to get only newer output. Use max_bytes to limit response size (default 51200). ANSI escape codes are stripped by default (set strip_ansi=false to preserve)."
     )]
     async fn get_logs(
         &self,
@@ -186,12 +204,13 @@ impl ServerHandler for BrainlogMcp {
                     "- You need context about the dev environment — discover what's running, read their output\n",
                     "- You need to search across multiple commands for a pattern (e.g. 'error', 'panic', a port number)\n\n",
                     "WORKFLOW:\n",
-                    "1. discover_services — find what commands are tracked (yours AND the user's), see their status\n",
-                    "2. get_logs — read stdout/stderr of a specific command (tail, head, or time range)\n",
-                    "3. search_logs — grep across all commands with regex\n",
-                    "4. wait_for_pattern — block until expected output appears (e.g. 'listening on port 3000')\n",
-                    "5. kill_service — send a signal (TERM, KILL, etc.) to stop a running command\n",
-                    "6. restart_service — restart a running command (sends SIGUSR1 to the wrapper)\n\n",
+                    "1. list_recent_runs — see the last N runs across all commands, newest first (best for 'what just happened?')\n",
+                    "2. discover_services — find what commands are tracked, grouped by executable+directory\n",
+                    "3. get_logs — read stdout/stderr of a specific command (by id or cwd shorthand)\n",
+                    "4. search_logs — grep across all commands with regex\n",
+                    "5. wait_for_pattern — block until expected output appears (e.g. 'listening on port 3000')\n",
+                    "6. kill_service — send a signal (TERM, KILL, etc.) to stop a running command\n",
+                    "7. restart_service — restart a running command (sends SIGUSR1 to the wrapper)\n\n",
                     "TIPS:\n",
                     "- Use get_logs with stream='stderr' to focus on errors\n",
                     "- Use since parameter for incremental polling (only new output since last check)\n",

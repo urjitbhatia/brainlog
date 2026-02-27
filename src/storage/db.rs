@@ -254,6 +254,61 @@ impl Database {
         Ok(runs)
     }
 
+    /// List recent runs across all services, newest first.
+    /// Supports optional filters on cwd, command, exit_code, and status.
+    pub fn list_recent_runs(
+        &self,
+        cwd: Option<&str>,
+        command: Option<&str>,
+        exit_code: Option<i32>,
+        status: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(Run, Service)>> {
+        let mut sql = String::from(
+            "SELECT r.id, r.service_id, r.pid, r.started_at, r.ended_at, r.exit_code, r.log_dir, r.status, r.wrapper_pid
+             FROM runs r
+             JOIN services s ON r.service_id = s.id
+             WHERE 1=1",
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(cwd_filter) = cwd {
+            sql.push_str(" AND s.working_dir LIKE ?");
+            param_values.push(Box::new(format!("%{}%", cwd_filter)));
+        }
+        if let Some(cmd_filter) = command {
+            sql.push_str(" AND s.command_line LIKE ?");
+            param_values.push(Box::new(format!("%{}%", cmd_filter)));
+        }
+        if let Some(ec) = exit_code {
+            sql.push_str(" AND r.exit_code = ?");
+            param_values.push(Box::new(ec));
+        }
+        if let Some(status_filter) = status {
+            sql.push_str(" AND r.status = ?");
+            param_values.push(Box::new(status_filter.to_string()));
+        }
+
+        sql.push_str(" ORDER BY r.started_at DESC LIMIT ?");
+        param_values.push(Box::new(limit as i64));
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let runs: Vec<Run> = stmt
+            .query_map(params_ref.as_slice(), row_to_run)?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to list recent runs")?;
+
+        let mut result = Vec::new();
+        for run in runs {
+            if let Some(service) = self.get_service(&run.service_id)? {
+                result.push((run, service));
+            }
+        }
+        Ok(result)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn search_services(
         &self,
@@ -400,6 +455,30 @@ impl Database {
             "No service or run found matching '{}'. Use `brainlog list` to see available services.",
             id
         );
+    }
+
+    /// Resolve a log directory by working directory substring match.
+    /// Finds the most recent run whose service's working_dir contains the given substring.
+    pub fn resolve_log_dir_by_cwd(&self, cwd: &str) -> Result<String> {
+        let pattern = format!("%{}%", cwd);
+        let mut stmt = self.conn.prepare(
+            "SELECT r.log_dir
+             FROM runs r
+             JOIN services s ON r.service_id = s.id
+             WHERE s.working_dir LIKE ?1
+             ORDER BY r.started_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(params![pattern])?;
+        if let Some(row) = rows.next()? {
+            let log_dir: String = row.get(0)?;
+            Ok(log_dir)
+        } else {
+            anyhow::bail!(
+                "No runs found for working directory matching '{}'. Use discover_services to find tracked commands.",
+                cwd
+            );
+        }
     }
 
     /// Search services whose metadata (name, command line, tag values) matches

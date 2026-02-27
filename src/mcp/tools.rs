@@ -15,6 +15,49 @@ fn strip_ansi_codes(s: &str) -> String {
     String::from_utf8_lossy(&stripped).into_owned()
 }
 
+pub fn list_recent_runs(
+    db: &Database,
+    params: ListRecentRunsParams,
+) -> Result<ListRecentRunsResponse> {
+    let limit = params.limit.unwrap_or(20);
+    let tail_lines = params.tail_lines.unwrap_or(0);
+
+    let rows = db.list_recent_runs(
+        params.cwd.as_deref(),
+        params.command.as_deref(),
+        params.exit_code,
+        params.status.as_deref(),
+        limit,
+    )?;
+
+    let runs = rows
+        .into_iter()
+        .map(|(run, service)| {
+            let log_preview = if tail_lines > 0 {
+                read_log_preview(&run.log_dir, tail_lines)
+            } else {
+                None
+            };
+            RecentRunInfo {
+                run_id: run.id,
+                service_id: service.id,
+                service_name: service.name,
+                executable: service.executable,
+                command_line: service.command_line,
+                working_dir: service.working_dir,
+                status: run.status.as_str().to_string(),
+                started_at: run.started_at.to_rfc3339(),
+                ended_at: run.ended_at.map(|t| t.to_rfc3339()),
+                exit_code: run.exit_code,
+                pid: run.pid,
+                log_preview,
+            }
+        })
+        .collect();
+
+    Ok(ListRecentRunsResponse { runs })
+}
+
 pub fn discover_services(
     db: &Database,
     params: DiscoverServicesParams,
@@ -108,6 +151,13 @@ fn discover_services_grouped(
             .filter_map(|svc| db.get_latest_run(&svc.id).ok().flatten())
             .max_by_key(|r| r.started_at);
 
+        if let Some(exit_code_filter) = params.exit_code {
+            match &latest_run_row {
+                Some(r) if r.exit_code == Some(exit_code_filter) => {}
+                _ => continue,
+            }
+        }
+
         let log_preview = if tail_lines > 0 {
             latest_run_row
                 .as_ref()
@@ -186,6 +236,14 @@ fn discover_services_flat(
             .collect();
 
         let latest_run = db.get_latest_run(&service.id)?;
+
+        if let Some(exit_code_filter) = params.exit_code {
+            match &latest_run {
+                Some(r) if r.exit_code == Some(exit_code_filter) => {}
+                _ => continue,
+            }
+        }
+
         let ports = if let Some(ref run) = latest_run {
             db.get_ports(&run.id)?.iter().map(|p| p.port).collect()
         } else {
@@ -236,8 +294,12 @@ pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse>
     let max_bytes = params.max_bytes.unwrap_or(51200);
     let strip_ansi = params.strip_ansi.unwrap_or(true);
 
-    // Resolve ID to log dir
-    let log_dir = db.resolve_log_dir(&params.id)?;
+    // Resolve log dir from id or cwd
+    let log_dir = match (params.id, params.cwd) {
+        (Some(id), _) => db.resolve_log_dir(&id)?,
+        (None, Some(cwd)) => db.resolve_log_dir_by_cwd(&cwd)?,
+        (None, None) => anyhow::bail!("Either 'id' or 'cwd' must be provided"),
+    };
     let reader = LogReader::new(Path::new(&log_dir), stream);
 
     let frames = match (mode, params.since) {
@@ -807,6 +869,7 @@ mod tests {
             executable: None,
             cwd: None,
             status: None,
+            exit_code: None,
             query: None,
             limit: None,
             group: None,
@@ -1004,7 +1067,8 @@ mod tests {
     async fn get_logs_by_service_name() {
         let (db, _, _, _dir) = setup_test_env().await;
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: None,
             lines: None,
@@ -1026,7 +1090,8 @@ mod tests {
     async fn get_logs_by_run_id() {
         let (db, _, run_id, _dir) = setup_test_env().await;
         let params = GetLogsParams {
-            id: run_id,
+            id: Some(run_id),
+            cwd: None,
             stream: Some(StreamFilter::Stdout),
             mode: Some(LogMode::Head),
             lines: Some(2),
@@ -1048,7 +1113,8 @@ mod tests {
     async fn get_logs_tail_mode() {
         let (db, _, _, _dir) = setup_test_env().await;
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: Some(StreamFilter::Stdout),
             mode: Some(LogMode::Tail),
             lines: Some(1),
@@ -1067,7 +1133,8 @@ mod tests {
     async fn get_logs_max_bytes_truncation() {
         let (db, _, _, _dir) = setup_test_env().await;
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: None,
             lines: None,
@@ -1086,7 +1153,8 @@ mod tests {
     async fn get_logs_stderr_stream() {
         let (db, _, _, _dir) = setup_test_env().await;
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: Some(StreamFilter::Stderr),
             mode: None,
             lines: None,
@@ -1110,7 +1178,8 @@ mod tests {
         // Frames have timestamps 1e9, 2e9, 3e9, 4e9.
         // Setting since=3_000_000_000 should only return frames at 3e9 and 4e9.
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: Some(LogMode::Head),
             lines: Some(100),
@@ -1134,7 +1203,8 @@ mod tests {
         // since=2e9 gives frames at 2e9, 3e9, 4e9 (3 frames).
         // Head with lines=1 should only return the first of those.
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: Some(LogMode::Head),
             lines: Some(1),
@@ -1155,7 +1225,8 @@ mod tests {
         // since=2e9 gives frames at 2e9, 3e9, 4e9 (3 frames).
         // Tail with lines=1 should only return the last of those.
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: Some(LogMode::Tail),
             lines: Some(1),
@@ -1175,7 +1246,8 @@ mod tests {
         let (db, _, _, _dir) = setup_test_env().await;
         // range start_time=1e9 but since=3e9 => effective start = max(3e9, 1e9) = 3e9
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: Some(LogMode::Range),
             lines: None,
@@ -1197,7 +1269,8 @@ mod tests {
         let (db, _, _, _dir) = setup_test_env().await;
         // Without since, all 4 frames should be returned
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: Some(LogMode::Head),
             lines: Some(100),
@@ -1216,7 +1289,8 @@ mod tests {
         let (db, _, _, _dir) = setup_test_env().await;
         // since far in the future should return no frames
         let params = GetLogsParams {
-            id: "test-web".to_string(),
+            id: Some("test-web".to_string()),
+            cwd: None,
             stream: None,
             mode: Some(LogMode::Head),
             lines: Some(100),
@@ -1457,7 +1531,8 @@ mod tests {
     async fn get_logs_strip_ansi_removes_escape_codes() {
         let (db, _, run_id, _dir) = setup_ansi_test_env().await;
         let params = GetLogsParams {
-            id: run_id,
+            id: Some(run_id),
+            cwd: None,
             stream: None,
             mode: None,
             lines: None,
@@ -1485,7 +1560,8 @@ mod tests {
     async fn get_logs_strip_ansi_false_preserves_codes() {
         let (db, _, run_id, _dir) = setup_ansi_test_env().await;
         let params = GetLogsParams {
-            id: run_id,
+            id: Some(run_id),
+            cwd: None,
             stream: None,
             mode: None,
             lines: None,
@@ -1506,7 +1582,8 @@ mod tests {
     async fn get_logs_default_strips_ansi() {
         let (db, _, run_id, _dir) = setup_ansi_test_env().await;
         let params = GetLogsParams {
-            id: run_id,
+            id: Some(run_id),
+            cwd: None,
             stream: None,
             mode: None,
             lines: None,

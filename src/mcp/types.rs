@@ -17,6 +17,8 @@ pub struct DiscoverServicesParams {
     pub cwd: Option<String>,
     /// Filter by run status: running, completed, failed
     pub status: Option<String>,
+    /// Filter by exit code of the latest run (e.g., 0 for success, 1 for failure)
+    pub exit_code: Option<i32>,
     /// Semantic search query (requires LLM)
     pub query: Option<String>,
     /// Maximum number of results (default 20)
@@ -83,9 +85,49 @@ pub struct RunInfo {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListRecentRunsParams {
+    /// Filter by working directory (substring match)
+    pub cwd: Option<String>,
+    /// Filter by command line (substring match)
+    pub command: Option<String>,
+    /// Filter by exit code (exact match)
+    pub exit_code: Option<i32>,
+    /// Filter by run status: running, completed, failed, crashed, killed
+    pub status: Option<String>,
+    /// Maximum number of results (default 20)
+    pub limit: Option<usize>,
+    /// Include a preview of the last N log lines from each run's combined stream. Omit or set to 0 to skip.
+    pub tail_lines: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListRecentRunsResponse {
+    pub runs: Vec<RecentRunInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecentRunInfo {
+    pub run_id: String,
+    pub service_id: String,
+    pub service_name: Option<String>,
+    pub executable: String,
+    pub command_line: Vec<String>,
+    pub working_dir: String,
+    pub status: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub exit_code: Option<i32>,
+    pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_preview: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetLogsParams {
-    /// Command name, command ID, or run ID (prefix match supported)
-    pub id: String,
+    /// Command name, command ID, or run ID (prefix match supported). Either id or cwd must be provided.
+    pub id: Option<String>,
+    /// Working directory substring to resolve the most recent run. Alternative to id — avoids a discover_services round-trip when you know the project directory.
+    pub cwd: Option<String>,
     /// Which output stream to read: stdout, stderr, stdin, combined (default: combined)
     pub stream: Option<StreamFilter>,
     /// Read mode: head, tail, range (default: tail)

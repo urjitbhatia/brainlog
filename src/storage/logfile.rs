@@ -156,18 +156,23 @@ impl LogReader {
         }
     }
 
-    /// Returns the path for a single-stream file, or the legacy combined.log path.
+    /// Returns the path for a single-stream file. Panics if called for Combined.
     fn single_stream_path(&self) -> PathBuf {
+        assert_ne!(
+            self.stream,
+            StreamFilter::Combined,
+            "single_stream_path called for Combined; use merge methods instead"
+        );
         self.log_dir.join(self.stream.log_filename())
     }
 
-    /// Whether this reader should use merge-sort (Combined mode without a legacy file).
-    pub fn uses_merge(&self) -> bool {
-        self.stream == StreamFilter::Combined && !self.log_dir.join("combined.log").exists()
+    /// Whether this reader uses merge-sort across stream files.
+    pub fn is_combined(&self) -> bool {
+        self.stream == StreamFilter::Combined
     }
 
     pub fn read_frames(&self) -> Result<Vec<Frame>> {
-        if self.uses_merge() {
+        if self.is_combined() {
             return self.merge_read_frames();
         }
         let path = self.single_stream_path();
@@ -175,7 +180,7 @@ impl LogReader {
     }
 
     pub fn read_head(&self, n: usize) -> Result<Vec<Frame>> {
-        if self.uses_merge() {
+        if self.is_combined() {
             return self.merge_read_head(n);
         }
         let path = self.single_stream_path();
@@ -199,7 +204,7 @@ impl LogReader {
     }
 
     pub fn read_tail(&self, n: usize) -> Result<Vec<Frame>> {
-        if self.uses_merge() {
+        if self.is_combined() {
             return self.merge_read_tail(n);
         }
         let path = self.single_stream_path();
@@ -230,7 +235,7 @@ impl LogReader {
     /// Read frames within a time range, streaming frame-by-frame.
     /// Skips frames before `start_time` and stops early after `end_time`.
     pub fn read_range(&self, start_time: Option<u64>, end_time: Option<u64>) -> Result<Vec<Frame>> {
-        if self.uses_merge() {
+        if self.is_combined() {
             return self.merge_read_range(start_time, end_time);
         }
         let path = self.single_stream_path();
@@ -268,7 +273,7 @@ impl LogReader {
     /// Search log frames for a pattern, streaming frame-by-frame.
     /// Stops as soon as `max_matches` are found without loading the entire file.
     pub fn search(&self, pattern: &regex::Regex, max_matches: usize) -> Result<Vec<LogMatch>> {
-        if self.uses_merge() {
+        if self.is_combined() {
             return self.merge_search(pattern, max_matches);
         }
         let path = self.single_stream_path();
@@ -313,17 +318,13 @@ impl LogReader {
     /// new byte offset (i.e. the position after the last successfully read frame).
     /// This enables incremental reads for follow/tail -f style use cases.
     ///
-    /// For combined mode without a legacy `combined.log`, this method is not
-    /// supported (combined follow mode should use `read_frames_since` instead).
-    /// It returns an empty result in that case.
+    /// Read frames starting from a byte offset for a single-stream reader.
+    /// Not supported for Combined mode — use `read_frames_since` instead.
     pub fn read_frames_from_offset(&self, offset: u64) -> Result<(Vec<Frame>, u64)> {
-        let path = if self.uses_merge() {
-            // Offset-based reading is not meaningful for merge-sorted combined mode.
-            // Callers should use read_frames_since() instead.
+        if self.is_combined() {
             return Ok((Vec::new(), offset));
-        } else {
-            self.single_stream_path()
-        };
+        }
+        let path = self.single_stream_path();
         if !path.exists() {
             return Ok((Vec::new(), offset));
         }
@@ -355,7 +356,7 @@ impl LogReader {
     }
 
     pub fn file_size(&self) -> Result<u64> {
-        if self.uses_merge() {
+        if self.is_combined() {
             let mut total = 0u64;
             for (filename, _) in &STREAM_FILES {
                 let p = self.log_dir.join(filename);
@@ -588,8 +589,7 @@ fn read_all_frames_from_file(path: &Path) -> Result<Vec<Frame>> {
 }
 
 /// Returns (stdout, stderr, stdin, combined) file sizes in bytes for a log directory.
-/// For new runs without a `combined.log`, the combined size is the sum of all three
-/// stream files.
+/// Combined size is the sum of all three stream files.
 pub fn log_sizes(log_dir: &Path) -> (u64, u64, u64, u64) {
     let size = |name: &str| -> u64 {
         std::fs::metadata(log_dir.join(name))
@@ -599,16 +599,7 @@ pub fn log_sizes(log_dir: &Path) -> (u64, u64, u64, u64) {
     let stdout_sz = size("stdout.log");
     let stderr_sz = size("stderr.log");
     let stdin_sz = size("stdin.log");
-    // For old runs, combined.log exists and we report its actual size.
-    // For new runs, report the sum of the three stream files.
-    let combined_sz = {
-        let legacy = size("combined.log");
-        if legacy > 0 {
-            legacy
-        } else {
-            stdout_sz + stderr_sz + stdin_sz
-        }
-    };
+    let combined_sz = stdout_sz + stderr_sz + stdin_sz;
     (stdout_sz, stderr_sz, stdin_sz, combined_sz)
 }
 
@@ -706,13 +697,8 @@ mod tests {
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 1);
 
-        // Read combined (merge-sorted from three stream files, no combined.log)
-        assert!(
-            !dir.path().join("combined.log").exists(),
-            "combined.log should not be created by new writer"
-        );
+        // Read combined (merge-sorted from three stream files)
         let reader = LogReader::new(dir.path(), StreamFilter::Combined);
-        assert!(reader.uses_merge(), "should use merge-sort for new runs");
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 4);
         // Verify merge-sort order: timestamps 1000, 2000, 3000, 4000
@@ -833,7 +819,6 @@ mod tests {
         assert!(stderr_sz > 0);
         assert_eq!(stdin_sz, 0); // file created but no stdin frames written
 
-        // No combined.log for new runs; combined_sz is the sum of stream files.
         assert_eq!(combined_sz, stdout_sz + stderr_sz + stdin_sz);
     }
 
@@ -1194,7 +1179,7 @@ mod tests {
 
     // ── Combined merge-sort tests ─────────────────────────────────────
 
-    /// Helper: set up a directory with separate stream files (no combined.log)
+    /// Helper: set up a directory with separate stream files for merge-sort tests
     /// to test merge-sort behaviour.
     fn setup_merge_dir() -> TempDir {
         let dir = TempDir::new().unwrap();
@@ -1227,7 +1212,7 @@ mod tests {
     fn combined_merge_read_frames() {
         let dir = setup_merge_dir();
         let reader = LogReader::new(dir.path(), StreamFilter::Combined);
-        assert!(reader.uses_merge());
+        assert!(reader.is_combined());
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 6);
         // Should be sorted by timestamp: 100, 150, 200, 300, 400, 500
@@ -1319,7 +1304,7 @@ mod tests {
         write_frames_to_file(&dir.path().join("stdin.log"), &[]);
 
         let reader = LogReader::new(dir.path(), StreamFilter::Combined);
-        assert!(reader.uses_merge());
+        assert!(reader.is_combined());
         assert_eq!(reader.read_frames().unwrap().len(), 0);
         assert_eq!(reader.read_head(5).unwrap().len(), 0);
         assert_eq!(reader.read_tail(5).unwrap().len(), 0);
@@ -1335,38 +1320,9 @@ mod tests {
         );
 
         let reader = LogReader::new(dir.path(), StreamFilter::Combined);
-        assert!(reader.uses_merge());
+        assert!(reader.is_combined());
         let frames = reader.read_frames().unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].payload, b"hello\n");
-    }
-
-    #[test]
-    fn legacy_combined_log_backward_compat() {
-        let dir = TempDir::new().unwrap();
-        // Write stream files
-        write_frames_to_file(
-            &dir.path().join("stdout.log"),
-            &[make_frame(StreamType::Stdout, b"out\n", 100)],
-        );
-        write_frames_to_file(
-            &dir.path().join("stderr.log"),
-            &[make_frame(StreamType::Stderr, b"err\n", 200)],
-        );
-        write_frames_to_file(&dir.path().join("stdin.log"), &[]);
-        // Write legacy combined.log (simulating old-format runs)
-        write_frames_to_file(
-            &dir.path().join("combined.log"),
-            &[
-                make_frame(StreamType::Stdout, b"out\n", 100),
-                make_frame(StreamType::Stderr, b"err\n", 200),
-            ],
-        );
-
-        let reader = LogReader::new(dir.path(), StreamFilter::Combined);
-        // Should NOT use merge — legacy combined.log exists
-        assert!(!reader.uses_merge());
-        let frames = reader.read_frames().unwrap();
-        assert_eq!(frames.len(), 2);
     }
 }

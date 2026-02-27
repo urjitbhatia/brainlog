@@ -67,8 +67,8 @@ async fn follow_logs(reader: &LogReader) -> Result<()> {
     loop {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-        if reader.uses_merge() {
-            // Combined mode without legacy combined.log: poll by timestamp
+        if reader.is_combined() {
+            // Combined mode: poll by timestamp across all stream files
             let new_frames = reader.read_frames_since(last_ts)?;
             if !new_frames.is_empty() {
                 if let Some(max_ts) = new_frames.iter().map(|f| f.timestamp_ns).max() {
@@ -77,7 +77,7 @@ async fn follow_logs(reader: &LogReader) -> Result<()> {
                 print!("{}", frames_to_text(&new_frames));
             }
         } else {
-            // Single-stream or legacy combined.log: poll by byte offset
+            // Single-stream: poll by byte offset
             let current_size = reader.file_size()?;
             if current_size > offset {
                 let (new_frames, new_offset) = reader.read_frames_from_offset(offset)?;

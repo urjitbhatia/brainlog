@@ -168,7 +168,7 @@ impl StreamFilter {
             Self::Stdout => "stdout.log",
             Self::Stderr => "stderr.log",
             Self::Stdin => "stdin.log",
-            Self::Combined => "combined.log",
+            Self::Combined => unreachable!("Combined has no single log file"),
         }
     }
 }
@@ -288,7 +288,6 @@ mod tests {
             (StreamFilter::Stdout, "stdout", "stdout.log"),
             (StreamFilter::Stderr, "stderr", "stderr.log"),
             (StreamFilter::Stdin, "stdin", "stdin.log"),
-            (StreamFilter::Combined, "combined", "combined.log"),
         ] {
             assert_eq!(filter.as_str(), expected_str);
             assert_eq!(filter.log_filename(), expected_filename);

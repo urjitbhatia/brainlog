@@ -3,7 +3,7 @@ use chrono::Utc;
 use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 use owo_colors::OwoColorize;
-use signal_hook::consts::SIGUSR1;
+use signal_hook::consts::{SIGINT, SIGTERM, SIGUSR1};
 use signal_hook_tokio::Signals;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -80,10 +80,12 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         db.add_tag(&service_id, key, value)?;
     }
 
-    // --- SIGUSR1 restart listener (spawned once, lives across loop iterations) ---
+    // --- Long-lived signal listeners (spawned once, live across loop iterations) ---
     let restart_requested = Arc::new(AtomicBool::new(false));
+    let stop_requested = Arc::new(AtomicBool::new(false));
     let current_child_pid = Arc::new(AtomicU32::new(0));
 
+    // SIGUSR1 listener: triggers restart
     let restart_flag = restart_requested.clone();
     let child_pid_ref = current_child_pid.clone();
     let sigusr1_handle = tokio::spawn(async move {
@@ -108,6 +110,21 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
                     let _ = signal::kill(nix_pid, Signal::SIGTERM);
                 }
             }
+        }
+    });
+
+    // SIGINT/SIGTERM listener: sets stop flag so wrapper exits between iterations
+    let stop_flag = stop_requested.clone();
+    let sigterm_handle = tokio::spawn(async move {
+        let mut signals = match Signals::new([SIGINT, SIGTERM]) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to register SIGINT/SIGTERM handler: {e}");
+                return;
+            }
+        };
+        if signals.next().await.is_some() {
+            stop_flag.store(true, Ordering::SeqCst);
         }
     });
 
@@ -246,16 +263,19 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
         // Print startup indicator
         let stderr_tty = std::io::stderr().is_terminal();
+        let short_svc_id = &service_id[..8.min(service_id.len())];
         if iteration == 1 {
             if stderr_tty {
                 eprintln!(
-                    "[brainlog] Capturing output for `{}`",
-                    args.command.join(" ").bold()
+                    "[brainlog] Capturing output for `{}` ({})",
+                    args.command.join(" ").bold(),
+                    short_svc_id.dimmed()
                 );
             } else {
                 eprintln!(
-                    "[brainlog] Capturing output for `{}`",
-                    args.command.join(" ")
+                    "[brainlog] Capturing output for `{}` ({})",
+                    args.command.join(" "),
+                    short_svc_id
                 );
             }
         } else if stderr_tty {
@@ -318,8 +338,19 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         // Stop port polling
         port_cancel.cancel();
 
+        // --- Restart decision (checked early to influence status/messaging) ---
+        let will_restart_manual = restart_requested.load(Ordering::SeqCst);
+        let will_restart_auto = args.restart
+            && !will_restart_manual
+            && exit_code != 130
+            && exit_code != 143
+            && !stop_requested.load(Ordering::SeqCst);
+
         // Update run status
-        let status = if exit_code == 0 {
+        let status = if will_restart_manual {
+            // Killed by SIGUSR1-triggered restart — not a failure
+            RunStatus::Completed
+        } else if exit_code == 0 {
             RunStatus::Completed
         } else {
             RunStatus::Failed
@@ -328,7 +359,22 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
         // Print completion summary
         let short_id = &run_id[..8.min(run_id.len())];
-        if stderr_tty {
+        if will_restart_manual {
+            if stderr_tty {
+                eprintln!(
+                    "[brainlog] Run {} {} (restarting), logs at {}",
+                    short_id,
+                    "stopped".yellow().bold(),
+                    log_dir.display().to_string().dimmed()
+                );
+            } else {
+                eprintln!(
+                    "[brainlog] Run {} stopped (restarting), logs at {}",
+                    short_id,
+                    log_dir.display()
+                );
+            }
+        } else if stderr_tty {
             if exit_code == 0 {
                 eprintln!(
                     "[brainlog] Run {} {} (exit 0), logs at {}",
@@ -362,33 +408,46 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
 
         last_exit_code = exit_code;
 
-        // --- Restart decision ---
-        if restart_requested.load(Ordering::SeqCst) {
-            // Manual restart via SIGUSR1
+        // --- Execute restart decision ---
+        if will_restart_manual {
             restart_requested.store(false, Ordering::SeqCst);
             eprintln!("[brainlog] Restart requested, respawning in 1s...");
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             continue;
         }
 
-        if args.restart {
-            // Auto-restart mode: don't restart on SIGINT (130) or SIGTERM (143)
-            if exit_code == 130 || exit_code == 143 {
-                eprintln!("[brainlog] Process terminated by signal, not restarting");
-                break;
-            }
+        if will_restart_auto {
             eprintln!("[brainlog] Auto-restart enabled, respawning in 1s...");
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            // Interruptible sleep: if Ctrl+C arrives during sleep, break immediately
+            tokio::select! {
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                () = async {
+                    while !stop_requested.load(Ordering::SeqCst) {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                } => {
+                    eprintln!("[brainlog] Interrupted during restart delay, exiting");
+                    break;
+                }
+            }
             continue;
+        }
+
+        if args.restart
+            && (exit_code == 130 || exit_code == 143 || stop_requested.load(Ordering::SeqCst))
+        {
+            eprintln!("[brainlog] Process terminated by signal, not restarting");
         }
 
         // No restart — exit the loop
         break;
     }
 
-    // Abort the SIGUSR1 listener
+    // Abort signal listeners
     sigusr1_handle.abort();
     let _ = sigusr1_handle.await;
+    sigterm_handle.abort();
+    let _ = sigterm_handle.await;
 
     // Print resume hint
     let has_user_name = effective_name.is_some();

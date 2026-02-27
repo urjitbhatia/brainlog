@@ -132,6 +132,7 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     #[allow(unused_assignments)]
     let mut last_exit_code: i32 = 1;
     let mut iteration = 0u32;
+    let mut enrichment_handle: Option<tokio::task::JoinHandle<()>> = None;
 
     loop {
         iteration += 1;
@@ -214,52 +215,61 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         let desc_bg = args.desc.clone();
         let first_iteration = iteration == 1;
 
-        let bg_handle = tokio::spawn(async move {
-            let pid = match pid_rx.await {
-                Ok(pid) => pid,
-                Err(_) => return,
-            };
+        let bg_handle: tokio::task::JoinHandle<Option<tokio::task::JoinHandle<()>>> =
+            tokio::spawn(async move {
+                let pid = match pid_rx.await {
+                    Ok(pid) => pid,
+                    Err(_) => return None,
+                };
 
-            // Store current child PID for SIGUSR1 handler
-            child_pid_ref_bg.store(pid, Ordering::SeqCst);
+                // Store current child PID for SIGUSR1 handler
+                child_pid_ref_bg.store(pid, Ordering::SeqCst);
 
-            // Record PID in database
-            if pid > 0 {
-                if let Ok(db) = Database::open(&db_path) {
-                    if let Err(e) = db.update_run_pid(&run_id_bg, pid) {
-                        tracing::warn!("Failed to record child PID: {e}");
+                // Record PID in database
+                if pid > 0 {
+                    if let Ok(db) = Database::open(&db_path) {
+                        if let Err(e) = db.update_run_pid(&run_id_bg, pid) {
+                            tracing::warn!("Failed to record child PID: {e}");
+                        }
                     }
                 }
-            }
 
-            // Start port detection
-            if config_bg.port_detection.enabled && pid > 0 {
-                let run_id_port = run_id_bg.clone();
-                let db_path_port = db_path.clone();
-                let poll_interval = config_bg.port_detection.poll_interval_secs;
-                let cancel = port_cancel_bg;
-                tokio::spawn(async move {
-                    platform::poll_ports(pid, &run_id_port, &db_path_port, poll_interval, cancel)
+                // Start port detection
+                if config_bg.port_detection.enabled && pid > 0 {
+                    let run_id_port = run_id_bg.clone();
+                    let db_path_port = db_path.clone();
+                    let poll_interval = config_bg.port_detection.poll_interval_secs;
+                    let cancel = port_cancel_bg;
+                    tokio::spawn(async move {
+                        platform::poll_ports(
+                            pid,
+                            &run_id_port,
+                            &db_path_port,
+                            poll_interval,
+                            cancel,
+                        )
                         .await;
-                });
-            }
+                    });
+                }
 
-            // LLM enrichment (fire-and-forget, first iteration only)
-            if first_iteration && config_bg.enrichment.enabled {
-                tokio::spawn(async move {
-                    llm::enrichment::enrich_service(
-                        &config_bg,
-                        &service_id_bg,
-                        &command_bg,
-                        &working_dir_bg,
-                        &tags_bg,
-                        desc_bg.as_deref(),
-                        has_user_name,
-                    )
-                    .await;
-                });
-            }
-        });
+                // LLM enrichment (first iteration only, awaited before exit)
+                if first_iteration && config_bg.enrichment.enabled {
+                    Some(tokio::spawn(async move {
+                        llm::enrichment::enrich_service(
+                            &config_bg,
+                            &service_id_bg,
+                            &command_bg,
+                            &working_dir_bg,
+                            &tags_bg,
+                            desc_bg.as_deref(),
+                            has_user_name,
+                        )
+                        .await;
+                    }))
+                } else {
+                    None
+                }
+            });
 
         // Print startup indicator
         let stderr_tty = std::io::stderr().is_terminal();
@@ -312,8 +322,10 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         // Spawn the wrapped process
         let spawn_result = process::spawn_wrapped(&args.command, tx.clone(), pid_tx).await?;
 
-        // Wait for background setup task to complete
-        let _ = bg_handle.await;
+        // Wait for background setup task to complete; capture enrichment handle
+        if let Some(handle) = bg_handle.await.ok().flatten() {
+            enrichment_handle = Some(handle);
+        }
 
         // Clear child PID since the child has exited
         current_child_pid.store(0, Ordering::SeqCst);
@@ -448,6 +460,11 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     let _ = sigusr1_handle.await;
     sigterm_handle.abort();
     let _ = sigterm_handle.await;
+
+    // Wait for LLM enrichment to finish (so short-lived commands don't kill it)
+    if let Some(handle) = enrichment_handle {
+        let _ = handle.await;
+    }
 
     // Print resume hint
     let has_user_name = effective_name.is_some();

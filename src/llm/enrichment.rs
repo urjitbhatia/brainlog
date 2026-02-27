@@ -108,9 +108,7 @@ pub async fn enrich_service(
                         description.as_deref(),
                         &EnrichmentStatus::Completed,
                     ) {
-                        warn!(
-                            "Failed to store enrichment result for service {service_id}: {e}"
-                        );
+                        warn!("Failed to store enrichment result for service {service_id}: {e}");
                     } else {
                         info!("Enriched service {}: name={:?}", service_id, name);
                     }
@@ -130,15 +128,11 @@ pub async fn enrich_service(
                         None,
                         &EnrichmentStatus::Failed,
                     ) {
-                        warn!(
-                            "Failed to mark enrichment as failed for service {service_id}: {e}"
-                        );
+                        warn!("Failed to mark enrichment as failed for service {service_id}: {e}");
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "Failed to open database for enrichment (service {service_id}): {e}"
-                    );
+                    warn!("Failed to open database for enrichment (service {service_id}): {e}");
                 }
             }
         }

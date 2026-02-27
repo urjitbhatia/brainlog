@@ -1,5 +1,8 @@
 use anyhow::Result;
+use std::io::IsTerminal;
 use std::path::Path;
+
+use owo_colors::OwoColorize;
 
 use crate::cli::LogsArgs;
 use crate::config::Config;
@@ -55,36 +58,57 @@ pub async fn handle_logs(args: LogsArgs) -> Result<()> {
 }
 
 async fn follow_logs(reader: &LogReader) -> Result<()> {
+    let tty = std::io::stderr().is_terminal();
+
+    if tty {
+        eprintln!(
+            "{} Following output... (Ctrl+C to stop)",
+            "[brainlog]".dimmed()
+        );
+    } else {
+        eprintln!("[brainlog] Following output... (Ctrl+C to stop)");
+    }
+
     // Show last 10 frames first
     let frames = reader.read_tail(10)?;
     print!("{}", frames_to_text(&frames));
 
     // Track the latest timestamp from the initial tail for timestamp-based polling
     let mut last_ts = frames.iter().map(|f| f.timestamp_ns).max().unwrap_or(0);
-    // Track byte offset for offset-based polling (single-stream / legacy combined)
+    // Track byte offset for offset-based polling (single-stream)
     let mut offset = reader.file_size()?;
 
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-        if reader.is_combined() {
-            // Combined mode: poll by timestamp across all stream files
-            let new_frames = reader.read_frames_since(last_ts)?;
-            if !new_frames.is_empty() {
-                if let Some(max_ts) = new_frames.iter().map(|f| f.timestamp_ns).max() {
-                    last_ts = max_ts;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                if tty {
+                    eprintln!("\n{} Stopped following.", "[brainlog]".dimmed());
+                } else {
+                    eprintln!("\n[brainlog] Stopped following.");
                 }
-                print!("{}", frames_to_text(&new_frames));
+                return Ok(());
             }
-        } else {
-            // Single-stream: poll by byte offset
-            let current_size = reader.file_size()?;
-            if current_size > offset {
-                let (new_frames, new_offset) = reader.read_frames_from_offset(offset)?;
-                if !new_frames.is_empty() {
-                    print!("{}", frames_to_text(&new_frames));
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => {
+                if reader.is_combined() {
+                    // Combined mode: poll by timestamp across all stream files
+                    let new_frames = reader.read_frames_since(last_ts)?;
+                    if !new_frames.is_empty() {
+                        if let Some(max_ts) = new_frames.iter().map(|f| f.timestamp_ns).max() {
+                            last_ts = max_ts;
+                        }
+                        print!("{}", frames_to_text(&new_frames));
+                    }
+                } else {
+                    // Single-stream: poll by byte offset
+                    let current_size = reader.file_size()?;
+                    if current_size > offset {
+                        let (new_frames, new_offset) = reader.read_frames_from_offset(offset)?;
+                        if !new_frames.is_empty() {
+                            print!("{}", frames_to_text(&new_frames));
+                        }
+                        offset = new_offset;
+                    }
                 }
-                offset = new_offset;
             }
         }
     }
@@ -103,15 +127,21 @@ async fn follow_logs_json(reader: &LogReader) -> Result<()> {
     let mut offset = reader.file_size()?;
 
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        let current_size = reader.file_size()?;
-        if current_size > offset {
-            let (new_frames, new_offset) = reader.read_frames_from_offset(offset)?;
-            for frame in &new_frames {
-                let json_frame = JsonFrame::from_frame(frame);
-                println!("{}", serde_json::to_string(&json_frame)?);
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                return Ok(());
             }
-            offset = new_offset;
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)) => {
+                let current_size = reader.file_size()?;
+                if current_size > offset {
+                    let (new_frames, new_offset) = reader.read_frames_from_offset(offset)?;
+                    for frame in &new_frames {
+                        let json_frame = JsonFrame::from_frame(frame);
+                        println!("{}", serde_json::to_string(&json_frame)?);
+                    }
+                    offset = new_offset;
+                }
+            }
         }
     }
 }

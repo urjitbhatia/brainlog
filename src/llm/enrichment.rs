@@ -1,4 +1,4 @@
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::storage::models::EnrichmentStatus;
@@ -19,11 +19,19 @@ pub async fn enrich_service(
         Some(c) => c,
         None => {
             // No LLM configured, mark as skipped
-            if let Ok(db) = Database::open(&config.db_path()) {
-                if let Err(e) =
-                    db.update_service_enrichment(service_id, None, None, &EnrichmentStatus::Skipped)
-                {
-                    warn!("Failed to mark enrichment as skipped for service {service_id}: {e}");
+            match Database::open(&config.db_path()) {
+                Ok(db) => {
+                    if let Err(e) = db.update_service_enrichment(
+                        service_id,
+                        None,
+                        None,
+                        &EnrichmentStatus::Skipped,
+                    ) {
+                        warn!("Failed to mark enrichment as skipped for service {service_id}: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to open database for enrichment (service {service_id}): {e}");
                 }
             }
             return;
@@ -49,13 +57,18 @@ pub async fn enrich_service(
     for pattern in &config.enrichment.project_file_patterns {
         let path = std::path::Path::new(working_dir).join(pattern);
         if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let preview = if content.len() > config.enrichment.max_file_preview_bytes {
-                    &content[..config.enrichment.max_file_preview_bytes]
-                } else {
-                    &content
-                };
-                context.push_str(&format!("\n{}:\n{}\n", pattern, preview));
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    let preview = if content.len() > config.enrichment.max_file_preview_bytes {
+                        &content[..config.enrichment.max_file_preview_bytes]
+                    } else {
+                        &content
+                    };
+                    context.push_str(&format!("\n{}:\n{}\n", pattern, preview));
+                }
+                Err(e) => {
+                    debug!("Could not read project file {}: {e}", path.display());
+                }
             }
         }
     }
@@ -87,26 +100,45 @@ pub async fn enrich_service(
             // If the user provided a name, do not overwrite it with the LLM-generated one
             let effective_name = if has_user_name { None } else { name.as_deref() };
 
-            if let Ok(db) = Database::open(&config.db_path()) {
-                if let Err(e) = db.update_service_enrichment(
-                    service_id,
-                    effective_name,
-                    description.as_deref(),
-                    &EnrichmentStatus::Completed,
-                ) {
-                    warn!("Failed to store enrichment result for service {service_id}: {e}");
-                } else {
-                    info!("Enriched service {}: name={:?}", service_id, name);
+            match Database::open(&config.db_path()) {
+                Ok(db) => {
+                    if let Err(e) = db.update_service_enrichment(
+                        service_id,
+                        effective_name,
+                        description.as_deref(),
+                        &EnrichmentStatus::Completed,
+                    ) {
+                        warn!(
+                            "Failed to store enrichment result for service {service_id}: {e}"
+                        );
+                    } else {
+                        info!("Enriched service {}: name={:?}", service_id, name);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to open database for enrichment (service {service_id}): {e}");
                 }
             }
         }
         Err(e) => {
             warn!("LLM enrichment failed: {}", e);
-            if let Ok(db) = Database::open(&config.db_path()) {
-                if let Err(e) =
-                    db.update_service_enrichment(service_id, None, None, &EnrichmentStatus::Failed)
-                {
-                    warn!("Failed to mark enrichment as failed for service {service_id}: {e}");
+            match Database::open(&config.db_path()) {
+                Ok(db) => {
+                    if let Err(e) = db.update_service_enrichment(
+                        service_id,
+                        None,
+                        None,
+                        &EnrichmentStatus::Failed,
+                    ) {
+                        warn!(
+                            "Failed to mark enrichment as failed for service {service_id}: {e}"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to open database for enrichment (service {service_id}): {e}"
+                    );
                 }
             }
         }

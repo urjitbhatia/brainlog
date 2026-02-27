@@ -183,3 +183,47 @@ pub struct WaitForPatternResponse {
     /// Whether the timeout was reached without finding a match
     pub timed_out: bool,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct KillServiceParams {
+    /// Command name, command ID, or ID prefix
+    pub id: String,
+    /// Signal to send: TERM (default), KILL, INT, HUP, USR1, USR2, QUIT, or a numeric signal
+    pub signal: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KillServiceResponse {
+    /// Whether the signal was sent successfully
+    pub success: bool,
+    /// Service name
+    pub service_name: String,
+    /// Service ID
+    pub service_id: String,
+    /// Signal that was sent
+    pub signal: String,
+    /// PIDs that received the signal
+    pub pids: Vec<u32>,
+    /// Human-readable summary
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestartServiceParams {
+    /// Command name, command ID, or ID prefix
+    pub id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RestartServiceResponse {
+    /// Whether the restart signal was sent successfully
+    pub success: bool,
+    /// Service name
+    pub service_name: String,
+    /// Service ID
+    pub service_id: String,
+    /// Wrapper PID that received SIGUSR1
+    pub wrapper_pid: u32,
+    /// Human-readable summary
+    pub message: String,
+}

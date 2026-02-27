@@ -91,6 +91,51 @@ impl BrainlogMcp {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
+    /// Send a signal to stop a running command.
+    #[tool(
+        description = "Send a signal (SIGTERM by default) to a running command tracked by brainlog. Kills the entire process tree (child processes first, then parent). Use this to stop a dev server, build process, or any running command.\n\nThe id parameter accepts a command name, command ID, or ID prefix. Supported signals: TERM (default, graceful), KILL (force), INT, HUP, USR1, USR2, QUIT, or a numeric signal.\n\nIf the child process has exited but the brainlog wrapper is still alive (e.g. in a restart loop), the signal is sent to the wrapper instead."
+    )]
+    async fn kill_service(
+        &self,
+        params: Parameters<KillServiceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Phase 1: resolve synchronously (Database is not Sync).
+        let db = self.open_db()?;
+        let resolved = tools::kill_service_resolve(&db, &params.0).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("{}", e).into(),
+            data: None,
+        })?;
+        drop(db);
+
+        // Phase 2: async kill (no &Database across await points).
+        let response = tools::kill_service(resolved).await.map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("{}", e).into(),
+            data: None,
+        })?;
+        let json = serde_json::to_string(&response).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    /// Restart a running command by sending SIGUSR1 to its wrapper.
+    #[tool(
+        description = "Restart a running command tracked by brainlog. Sends SIGUSR1 to the brainlog wrapper process, which gracefully stops the current child and respawns it. The command must have been started with brainlog (so it has a wrapper PID).\n\nThe id parameter accepts a command name, command ID, or ID prefix. The command must be currently running. After restart, use wait_for_pattern to confirm the new instance started successfully."
+    )]
+    fn restart_service(
+        &self,
+        params: Parameters<RestartServiceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let db = self.open_db()?;
+        let response = tools::restart_service(&db, params.0).map_err(|e| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: format!("{}", e).into(),
+            data: None,
+        })?;
+        let json = serde_json::to_string(&response).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
     /// Wait for a pattern to appear in a command's output.
     #[tool(
         description = "Block until a regex pattern appears in a command's stdout/stderr output, or timeout. Similar to Playwright's wait_for_text. Ideal for verifying async behavior: start a build or server, then wait_for_pattern to confirm it printed expected output (e.g. 'listening on port', 'build succeeded', 'error').\n\nThe id parameter accepts a command name, command ID, or run ID. By default only matches NEW output (since=now). Set since=0 to search full history. Supports Rust regex with alternation (started|error). Configurable timeout (default 30s) and poll_interval_ms (default 500ms). Returns the matching line, its timestamp, and elapsed wait time."
@@ -144,7 +189,9 @@ impl ServerHandler for BrainlogMcp {
                     "1. discover_services — find what commands are tracked (yours AND the user's), see their status\n",
                     "2. get_logs — read stdout/stderr of a specific command (tail, head, or time range)\n",
                     "3. search_logs — grep across all commands with regex\n",
-                    "4. wait_for_pattern — block until expected output appears (e.g. 'listening on port 3000')\n\n",
+                    "4. wait_for_pattern — block until expected output appears (e.g. 'listening on port 3000')\n",
+                    "5. kill_service — send a signal (TERM, KILL, etc.) to stop a running command\n",
+                    "6. restart_service — restart a running command (sends SIGUSR1 to the wrapper)\n\n",
                     "TIPS:\n",
                     "- Use get_logs with stream='stderr' to focus on errors\n",
                     "- Use since parameter for incremental polling (only new output since last check)\n",

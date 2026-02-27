@@ -430,6 +430,235 @@ fn read_log_preview(log_dir: &str, tail_lines: usize) -> Option<String> {
     Some(frames_to_text(&frames))
 }
 
+/// Resolved info from the sync phase of kill_service.
+pub struct KillServiceResolved {
+    pub service_name: String,
+    pub service_id: String,
+    pub signal: nix::sys::signal::Signal,
+    /// None if wrapper was already killed in resolve phase (early return).
+    pub target: Option<KillTarget>,
+    /// Early response when wrapper was killed directly.
+    pub early_response: Option<KillServiceResponse>,
+}
+
+pub enum KillTarget {
+    ChildPid(u32),
+}
+
+/// Phase 1: synchronously resolve service, run, and PID info (Database is not Sync).
+pub fn kill_service_resolve(
+    db: &Database,
+    params: &KillServiceParams,
+) -> Result<KillServiceResolved> {
+    use crate::cli::kill::{is_process_alive, resolve_service};
+    use crate::storage::models::RunStatus;
+    use nix::sys::signal;
+    use nix::unistd::Pid;
+
+    let sig = parse_signal(params.signal.as_deref().unwrap_or("TERM"))?;
+
+    let (service, _) = resolve_service(db, &params.id)?;
+    let service_name = service
+        .name
+        .clone()
+        .unwrap_or_else(|| service.id[..8.min(service.id.len())].to_string());
+
+    let run = db
+        .get_latest_run(&service.id)?
+        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no runs", service_name))?;
+
+    // If child isn't running, try the wrapper PID
+    if run.status != RunStatus::Running {
+        if let Some(wrapper_pid) = run.wrapper_pid {
+            if is_process_alive(wrapper_pid) {
+                let nix_pid = Pid::from_raw(wrapper_pid as i32);
+                signal::kill(nix_pid, sig).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to send {} to wrapper PID {}: {}",
+                        sig,
+                        wrapper_pid,
+                        e
+                    )
+                })?;
+                return Ok(KillServiceResolved {
+                    service_name: service_name.clone(),
+                    service_id: service.id.clone(),
+                    signal: sig,
+                    target: None,
+                    early_response: Some(KillServiceResponse {
+                        success: true,
+                        service_name,
+                        service_id: service.id,
+                        signal: format!("{}", sig),
+                        pids: vec![wrapper_pid],
+                        message: format!(
+                            "Sent {} to wrapper PID {} (child not running)",
+                            sig, wrapper_pid
+                        ),
+                    }),
+                });
+            }
+        }
+        anyhow::bail!(
+            "Service '{}' is not running (status: {})",
+            service_name,
+            run.status.as_str()
+        );
+    }
+
+    let pid = run
+        .pid
+        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no PID recorded", service_name))?;
+
+    Ok(KillServiceResolved {
+        service_name,
+        service_id: service.id,
+        signal: sig,
+        target: Some(KillTarget::ChildPid(pid)),
+        early_response: None,
+    })
+}
+
+/// Phase 2: async kill (collect process tree, send signals). No &Database needed.
+pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceResponse> {
+    use crate::cli::kill::collect_process_tree;
+    use nix::sys::signal;
+    use nix::unistd::Pid;
+
+    // If resolve phase already handled it (wrapper kill), return early.
+    if let Some(resp) = resolved.early_response {
+        return Ok(resp);
+    }
+
+    let pid = match resolved.target {
+        Some(KillTarget::ChildPid(pid)) => pid,
+        None => anyhow::bail!("No target PID to kill"),
+    };
+
+    let tree = collect_process_tree(pid).await;
+
+    // Send signal to children first (deepest first), then parent
+    let mut kill_order: Vec<u32> = tree.iter().copied().filter(|&p| p != pid).collect();
+    kill_order.reverse();
+    kill_order.push(pid);
+
+    let mut signaled = Vec::new();
+    for target_pid in &kill_order {
+        let nix_pid = Pid::from_raw(*target_pid as i32);
+        if signal::kill(nix_pid, resolved.signal).is_ok() {
+            signaled.push(*target_pid);
+        }
+    }
+
+    let message = if kill_order.len() == 1 {
+        format!(
+            "Sent {} to '{}' (PID {})",
+            resolved.signal, resolved.service_name, pid
+        )
+    } else {
+        format!(
+            "Sent {} to '{}' (PID {} + {} child processes)",
+            resolved.signal,
+            resolved.service_name,
+            pid,
+            kill_order.len() - 1
+        )
+    };
+
+    Ok(KillServiceResponse {
+        success: true,
+        service_name: resolved.service_name,
+        service_id: resolved.service_id,
+        signal: format!("{}", resolved.signal),
+        pids: signaled,
+        message,
+    })
+}
+
+pub fn restart_service(
+    db: &Database,
+    params: RestartServiceParams,
+) -> Result<RestartServiceResponse> {
+    use crate::cli::kill::resolve_service;
+    use crate::storage::models::RunStatus;
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
+
+    let (service, _) = resolve_service(db, &params.id)?;
+    let service_name = service
+        .name
+        .clone()
+        .unwrap_or_else(|| service.id[..8.min(service.id.len())].to_string());
+
+    let run = db
+        .get_latest_run(&service.id)?
+        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no runs", service_name))?;
+
+    if run.status != RunStatus::Running {
+        anyhow::bail!(
+            "Service '{}' is not running (status: {})",
+            service_name,
+            run.status.as_str()
+        );
+    }
+
+    let wrapper_pid = run.wrapper_pid.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Service '{}' has no wrapper PID (was it started with an older brainlog version?)",
+            service_name
+        )
+    })?;
+
+    let nix_pid = Pid::from_raw(wrapper_pid as i32);
+    signal::kill(nix_pid, Signal::SIGUSR1).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to send SIGUSR1 to wrapper PID {}: {}",
+            wrapper_pid,
+            e
+        )
+    })?;
+
+    Ok(RestartServiceResponse {
+        success: true,
+        service_name: service_name.clone(),
+        service_id: service.id,
+        wrapper_pid,
+        message: format!(
+            "Sent restart signal to '{}' (wrapper PID {})",
+            service_name, wrapper_pid
+        ),
+    })
+}
+
+/// Parse a signal name or number into a nix Signal.
+fn parse_signal(s: &str) -> Result<nix::sys::signal::Signal> {
+    use nix::sys::signal::Signal;
+    let upper = s.to_uppercase();
+    let name = if upper.starts_with("SIG") {
+        upper.as_str()
+    } else {
+        &upper
+    };
+    match name {
+        "TERM" | "SIGTERM" => return Ok(Signal::SIGTERM),
+        "KILL" | "SIGKILL" => return Ok(Signal::SIGKILL),
+        "INT" | "SIGINT" => return Ok(Signal::SIGINT),
+        "HUP" | "SIGHUP" => return Ok(Signal::SIGHUP),
+        "USR1" | "SIGUSR1" => return Ok(Signal::SIGUSR1),
+        "USR2" | "SIGUSR2" => return Ok(Signal::SIGUSR2),
+        "QUIT" | "SIGQUIT" => return Ok(Signal::SIGQUIT),
+        _ => {}
+    }
+    if let Ok(num) = s.parse::<i32>() {
+        return Signal::try_from(num)
+            .map_err(|_| anyhow::anyhow!("Invalid signal number: {}", num));
+    }
+    anyhow::bail!(
+        "Unknown signal '{}'. Supported: TERM, KILL, INT, HUP, USR1, USR2, QUIT, or a number",
+        s
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

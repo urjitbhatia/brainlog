@@ -29,7 +29,14 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         .get_latest_run(&service.id)?
         .ok_or_else(|| anyhow::anyhow!("Service '{}' has no runs", service_name))?;
 
+    // If the child isn't running, try the wrapper PID (covers restart loops
+    // where the child is short-lived but the brainlog wrapper is still alive)
     if run.status != RunStatus::Running {
+        if let Some(wrapper_pid) = run.wrapper_pid {
+            if is_process_alive(wrapper_pid) {
+                return kill_wrapper(wrapper_pid, signal, service_name);
+            }
+        }
         bail!(
             "Service '{}' is not running (status: {})",
             service_name,
@@ -108,6 +115,42 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Check if a process is alive by sending signal 0 (no-op signal).
+pub fn is_process_alive(pid: u32) -> bool {
+    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+}
+
+/// Send a signal to the brainlog wrapper process (used when no child is running).
+fn kill_wrapper(wrapper_pid: u32, signal: Signal, service_name: &str) -> Result<()> {
+    let nix_pid = Pid::from_raw(wrapper_pid as i32);
+    signal::kill(nix_pid, signal).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to send {} to wrapper PID {}: {}",
+            signal,
+            wrapper_pid,
+            e
+        )
+    })?;
+
+    let signal_name = format!("{}", signal);
+    let tty = std::io::stdout().is_terminal();
+    if tty {
+        println!(
+            "{} Sent {} to '{}' (wrapper PID {})",
+            "ok".green(),
+            signal_name,
+            service_name.bold(),
+            wrapper_pid
+        );
+    } else {
+        println!(
+            "Sent {} to '{}' (wrapper PID {})",
+            signal_name, service_name, wrapper_pid
+        );
+    }
     Ok(())
 }
 

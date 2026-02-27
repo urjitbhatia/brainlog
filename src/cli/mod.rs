@@ -113,6 +113,9 @@ pub fn validate_tags(tags: &[String]) -> Result<()> {
 
 #[derive(Parser, Debug)]
 pub struct ListArgs {
+    /// Service ID or name to show run history for
+    pub id: Option<String>,
+
     /// Filter by name
     #[arg(short, long)]
     pub name: Option<String>,

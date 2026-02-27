@@ -1,12 +1,15 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use owo_colors::OwoColorize;
 use serde::Serialize;
 use std::io::IsTerminal;
 use std::path::Path;
 
+use crate::cli::kill::{is_process_alive, resolve_service};
 use crate::cli::ListArgs;
 use crate::config::Config;
 use crate::storage::logfile::log_sizes;
+use crate::storage::models::RunStatus;
 use crate::storage::Database;
 
 /// JSON output struct for a service in the list command.
@@ -22,6 +25,8 @@ struct ServiceJson {
     tags: Vec<TagJson>,
     latest_run: Option<RunJson>,
     ports: Vec<u16>,
+    run_count: usize,
+    wrapper_alive: bool,
 }
 
 #[derive(Serialize)]
@@ -57,9 +62,41 @@ fn colour_status(status: &str, is_tty: bool) -> String {
     }
     match status.trim() {
         "running" => format!("{}", status.green()),
-        "completed" => format!("{}", status.yellow()),
+        "restarting" => format!("{}", status.yellow()),
+        "completed" => format!("{}", status.dimmed()),
         "failed" => format!("{}", status.red()),
         _ => format!("{}", status.dimmed()),
+    }
+}
+
+/// Determine wrapper-aware status for a service's latest run.
+/// Returns "restarting" if the child isn't running but the wrapper PID is alive.
+fn wrapper_aware_status(run: &crate::storage::models::Run) -> String {
+    if run.status == RunStatus::Running {
+        return "running".to_string();
+    }
+    if let Some(wrapper_pid) = run.wrapper_pid {
+        if is_process_alive(wrapper_pid) {
+            return "restarting".to_string();
+        }
+    }
+    run.status.as_str().to_string()
+}
+
+/// Format a duration between two timestamps as a human-readable string.
+fn format_duration(started: DateTime<Utc>, ended: Option<DateTime<Utc>>) -> String {
+    let end = ended.unwrap_or_else(Utc::now);
+    let dur = end.signed_duration_since(started);
+    let secs = dur.num_seconds();
+    if secs < 0 {
+        return "0s".to_string();
+    }
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 
@@ -123,6 +160,11 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
 
+    // Drill-down mode: `brainlog list <id>`
+    if let Some(ref target) = args.id {
+        return handle_list_drilldown(&db, target, &args);
+    }
+
     if args.group {
         return handle_list_grouped(&db, &args);
     }
@@ -134,48 +176,7 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     };
 
     if args.json {
-        let mut json_services = Vec::new();
-        for service in &services {
-            let tags = db.get_tags(&service.id)?;
-            let tag_json: Vec<TagJson> = tags
-                .iter()
-                .map(|t| TagJson {
-                    key: t.key.clone(),
-                    value: t.value.clone(),
-                })
-                .collect();
-
-            let (latest_run, ports) = if let Some(run) = db.get_latest_run(&service.id)? {
-                let run_ports = db.get_ports(&run.id)?;
-                let port_nums: Vec<u16> = run_ports.iter().map(|p| p.port).collect();
-                (
-                    Some(RunJson {
-                        id: run.id.clone(),
-                        status: run.status.as_str().to_string(),
-                        started_at: run.started_at.to_rfc3339(),
-                        exit_code: run.exit_code,
-                    }),
-                    port_nums,
-                )
-            } else {
-                (None, Vec::new())
-            };
-
-            json_services.push(ServiceJson {
-                id: service.id.clone(),
-                name: service.name.clone(),
-                description: service.description.clone(),
-                executable: service.executable.clone(),
-                command_line: service.command_line.clone(),
-                working_dir: service.working_dir.clone(),
-                created_at: service.created_at.to_rfc3339(),
-                tags: tag_json,
-                latest_run,
-                ports,
-            });
-        }
-        println!("{}", serde_json::to_string_pretty(&json_services)?);
-        return Ok(());
+        return handle_list_json(&db, &services);
     }
 
     if services.is_empty() {
@@ -213,10 +214,13 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             }
 
             if let Some(run) = db.get_latest_run(&service.id)? {
+                let status = wrapper_aware_status(&run);
+                let run_count = db.count_runs(&service.id)?;
                 println!(
-                    "Latest Run:  {} ({})",
+                    "Latest Run:  {} ({}) [{} total runs]",
                     &run.id[..id_prefix_len.min(run.id.len())],
-                    run.status.as_str()
+                    status,
+                    run_count,
                 );
                 println!("Started At:  {}", run.started_at);
                 if let Some(exit_code) = run.exit_code {
@@ -242,8 +246,8 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Fixed-width columns: ID(dynamic) + STATUS(12) + CREATED(20) + gaps(8)
-    let fixed_cols = id_prefix_len + 12 + 20 + 8;
+    // Fixed-width columns: ID + STATUS(12) + RUNS(6) + LAST_RUN(id_prefix) + CREATED(20) + gaps(12)
+    let fixed_cols = id_prefix_len + 12 + 6 + id_prefix_len + 20 + 12;
     let width = term_width();
     let available = width.saturating_sub(fixed_cols);
     // Split remaining space: ~40% name, ~60% command
@@ -253,24 +257,30 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     let tty = stdout_is_tty();
     if tty {
         println!(
-            "{:<iw$}  {:<nw$}  {:<12}  {:<20}  {}",
+            "{:<iw$}  {:<nw$}  {:<12}  {:<6}  {:<rw$}  {:<20}  {}",
             "ID".bold(),
             format!("{:<nw$}", "NAME", nw = name_max).bold(),
             "STATUS".bold(),
+            "RUNS".bold(),
+            format!("{:<rw$}", "LAST RUN", rw = id_prefix_len).bold(),
             "CREATED".bold(),
             "COMMAND".bold(),
             iw = id_prefix_len,
-            nw = name_max
+            nw = name_max,
+            rw = id_prefix_len,
         );
     } else {
         println!(
-            "{:<iw$}  {:<nw$}  {:<12}  {:<20}  COMMAND",
+            "{:<iw$}  {:<nw$}  {:<12}  {:<6}  {:<rw$}  {:<20}  COMMAND",
             "ID",
             "NAME",
             "STATUS",
+            "RUNS",
+            "LAST RUN",
             "CREATED",
             iw = id_prefix_len,
-            nw = name_max
+            nw = name_max,
+            rw = id_prefix_len,
         );
     }
 
@@ -279,28 +289,32 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             .name
             .as_deref()
             .unwrap_or(&service.id[..id_prefix_len]);
-        let status_raw = if let Some(run) = db.get_latest_run(&service.id)? {
-            run.status.as_str().to_string()
+        let (status_raw, last_run_id) = if let Some(run) = db.get_latest_run(&service.id)? {
+            let status = wrapper_aware_status(&run);
+            let run_prefix = &run.id[..id_prefix_len.min(run.id.len())];
+            (status, run_prefix.to_string())
         } else {
-            "no runs".to_string()
+            ("no runs".to_string(), "-".to_string())
         };
+        let run_count = db.count_runs(&service.id)?;
         let created = service.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
         let cmd = service.command_line.join(" ");
 
-        // The coloured status string may contain ANSI escapes, so we pad the raw
-        // string to the column width first, then colourise that padded string.
         let status_padded = format!("{:<12}", status_raw);
         let status_display = colour_status(&status_padded, tty);
 
         println!(
-            "{:<iw$}  {:<nw$}  {}  {:<20}  {}",
+            "{:<iw$}  {:<nw$}  {}  {:<6}  {:<rw$}  {:<20}  {}",
             &service.id[..id_prefix_len],
             truncate(name_display, name_max),
             status_display,
+            run_count,
+            last_run_id,
             created,
             truncate(&cmd, cmd_max),
             iw = id_prefix_len,
-            nw = name_max
+            nw = name_max,
+            rw = id_prefix_len,
         );
     }
 
@@ -308,10 +322,158 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     if stderr_is_tty() {
         eprintln!(
             "{}",
-            "Tip: resume a service with: brainlog --resume <name> <command>".dimmed()
+            "Tip: use `brainlog list <id>` to see full run history".dimmed()
         );
     } else {
-        eprintln!("Tip: resume a service with: brainlog --resume <name> <command>");
+        eprintln!("Tip: use `brainlog list <id>` to see full run history");
+    }
+
+    Ok(())
+}
+
+fn handle_list_json(db: &Database, services: &[crate::storage::models::Service]) -> Result<()> {
+    let mut json_services = Vec::new();
+    for service in services {
+        let tags = db.get_tags(&service.id)?;
+        let tag_json: Vec<TagJson> = tags
+            .iter()
+            .map(|t| TagJson {
+                key: t.key.clone(),
+                value: t.value.clone(),
+            })
+            .collect();
+
+        let run_count = db.count_runs(&service.id)?;
+        let (latest_run, ports, wrapper_alive) =
+            if let Some(run) = db.get_latest_run(&service.id)? {
+                let run_ports = db.get_ports(&run.id)?;
+                let port_nums: Vec<u16> = run_ports.iter().map(|p| p.port).collect();
+                let alive = run.wrapper_pid.map(is_process_alive).unwrap_or(false);
+                (
+                    Some(RunJson {
+                        id: run.id.clone(),
+                        status: run.status.as_str().to_string(),
+                        started_at: run.started_at.to_rfc3339(),
+                        exit_code: run.exit_code,
+                    }),
+                    port_nums,
+                    alive,
+                )
+            } else {
+                (None, Vec::new(), false)
+            };
+
+        json_services.push(ServiceJson {
+            id: service.id.clone(),
+            name: service.name.clone(),
+            description: service.description.clone(),
+            executable: service.executable.clone(),
+            command_line: service.command_line.clone(),
+            working_dir: service.working_dir.clone(),
+            created_at: service.created_at.to_rfc3339(),
+            tags: tag_json,
+            latest_run,
+            ports,
+            run_count,
+            wrapper_alive,
+        });
+    }
+    println!("{}", serde_json::to_string_pretty(&json_services)?);
+    Ok(())
+}
+
+/// Drill-down mode: show all runs for a specific service.
+fn handle_list_drilldown(db: &Database, target: &str, args: &ListArgs) -> Result<()> {
+    let (service, _matched_by) = resolve_service(db, target)?;
+    let runs = db.list_runs(&service.id)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&runs)?);
+        return Ok(());
+    }
+
+    let service_name = service
+        .name
+        .as_deref()
+        .unwrap_or(&service.id[..8.min(service.id.len())]);
+
+    let tty = stdout_is_tty();
+
+    if tty {
+        println!(
+            "Runs for '{}' ({}):\n",
+            service_name.bold(),
+            service.id[..12.min(service.id.len())].to_string().dimmed()
+        );
+    } else {
+        println!(
+            "Runs for '{}' ({}):\n",
+            service_name,
+            &service.id[..12.min(service.id.len())]
+        );
+    }
+
+    if runs.is_empty() {
+        println!("  No runs found.");
+        return Ok(());
+    }
+
+    let run_ids: Vec<&str> = runs.iter().map(|r| r.id.as_str()).collect();
+    let run_prefix_len = unique_prefix_len(&run_ids, 8);
+
+    if tty {
+        println!(
+            "  {:<rw$}  {:<12}  {:<7}  {:<5}  {:<20}  {}",
+            "RUN ID".bold(),
+            "STATUS".bold(),
+            "PID".bold(),
+            "EXIT".bold(),
+            "STARTED".bold(),
+            "DURATION".bold(),
+            rw = run_prefix_len,
+        );
+    } else {
+        println!(
+            "  {:<rw$}  {:<12}  {:<7}  {:<5}  {:<20}  DURATION",
+            "RUN ID",
+            "STATUS",
+            "PID",
+            "EXIT",
+            "STARTED",
+            rw = run_prefix_len,
+        );
+    }
+
+    for run in &runs {
+        let status_raw = run.status.as_str();
+        let status_padded = format!("{:<12}", status_raw);
+        let status_display = colour_status(&status_padded, tty);
+
+        let pid_display = run
+            .pid
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let exit_display = run
+            .exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let started = run.started_at.format("%Y-%m-%d %H:%M:%S").to_string();
+        let duration = if run.status == RunStatus::Running {
+            format_duration(run.started_at, None)
+        } else {
+            format_duration(run.started_at, run.ended_at)
+        };
+
+        println!(
+            "  {:<rw$}  {}  {:<7}  {:<5}  {:<20}  {}",
+            &run.id[..run_prefix_len.min(run.id.len())],
+            status_display,
+            pid_display,
+            exit_display,
+            started,
+            duration,
+            rw = run_prefix_len,
+        );
     }
 
     Ok(())
@@ -372,16 +534,13 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
             .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
             .unwrap_or_else(|| "never".to_string());
 
-        let latest_status_raw = group
-            .latest_run_status
-            .as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or("no runs");
+        // Use wrapper-aware status: check if any service in the group has a live wrapper
+        let latest_status_raw = group_wrapper_aware_status(db, group);
 
         let dir = shorten_home(&group.working_dir);
 
         if tty {
-            let status_display = colour_status(latest_status_raw, true);
+            let status_display = colour_status(&latest_status_raw, true);
             println!(
                 "[ {} ] in {}  ({} runs, latest: {} {})",
                 group.executable.bold(),
@@ -409,7 +568,7 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
             for svc in &group.services {
                 let name = svc.name.as_deref().unwrap_or("-");
                 let status_raw = if let Some(run) = db.get_latest_run(&svc.id)? {
-                    run.status.as_str().to_string()
+                    wrapper_aware_status(&run)
                 } else {
                     "no runs".to_string()
                 };
@@ -430,4 +589,38 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Determine wrapper-aware status for a service group.
+/// Checks the latest run across services in the group for wrapper liveness.
+fn group_wrapper_aware_status(
+    db: &Database,
+    group: &crate::storage::models::ServiceGroup,
+) -> String {
+    // If the group already reports running, keep it
+    if let Some(ref status) = group.latest_run_status {
+        if *status == RunStatus::Running {
+            return "running".to_string();
+        }
+    }
+
+    // Check each service's latest run for a live wrapper
+    for svc in &group.services {
+        if let Ok(Some(run)) = db.get_latest_run(&svc.id) {
+            if run.status == RunStatus::Running {
+                return "running".to_string();
+            }
+            if let Some(wrapper_pid) = run.wrapper_pid {
+                if is_process_alive(wrapper_pid) {
+                    return "restarting".to_string();
+                }
+            }
+        }
+    }
+
+    group
+        .latest_run_status
+        .as_ref()
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_else(|| "no runs".to_string())
 }

@@ -26,8 +26,9 @@ Scope: Full codebase analysis of current `master` (commit `9bdc3c2`)
 ~~`poll_ports` runs an infinite loop that never checks if the child process has exited. After the child terminates, the tokio task continues polling `lsof` on a dead PID forever (or until the parent exits). The task is fire-and-forget with no cancellation token.~~
 **Fixed in `worktree-agent-aca55bb7` branch** (commit `996a6c8`). Added `CancellationToken` from `tokio-util`. Polling loop uses `tokio::select!` to race between tick and cancellation. Token cancelled and handle awaited after child exits in `run.rs`.
 
-### 1.6 LLM enrichment opens a *second* database connection (src/llm/enrichment.rs:87,99)
-The enrichment task opens a new `Database::open(&config.db_path())` instead of reusing the existing connection. With WAL mode this generally works, but it means the enrichment task re-initializes the schema and opens a fresh connection each time. If the database file is locked or the path changes, this could silently fail (and the `let _ = db.update_service_enrichment(...)` discards errors).
+### ~~1.6 LLM enrichment opens a *second* database connection (src/llm/enrichment.rs:87,99)~~ FIXED
+~~The enrichment task opens a new `Database::open(&config.db_path())` instead of reusing the existing connection. With WAL mode this generally works, but it means the enrichment task re-initializes the schema and opens a fresh connection each time. If the database file is locked or the path changes, this could silently fail (and the `let _ = db.update_service_enrichment(...)` discards errors).~~
+**Fixed on master** (commit `3ff2aa3`). Replaced `let _ =` error discarding with `match` + `tracing::warn!` for all three DB error paths. Project file read failures logged at `debug` level.
 
 ### ~~1.7 Tag format not validated (src/cli/run.rs:34)~~ FIXED
 ~~Tags without a `:` separator are silently dropped. `--tag "invalid"` produces no error and no tag. Users get no feedback that their tag was ignored.~~
@@ -107,8 +108,9 @@ The enrichment task opens a new `Database::open(&config.db_path())` instead of r
 ~~Even for `max_matches = 1`, the entire file is read into a `Vec<Frame>` first. A streaming approach that reads and matches frame-by-frame would use constant memory.~~
 **Fixed on master** (commit `18303d5`). `search` now streams frame-by-frame, stops at `max_matches` without loading the entire file.
 
-### 3.4 Combined log is redundant storage
-Every frame is written to both a stream-specific file and `combined.log`, doubling disk usage. The combined view could be reconstructed by merge-sorting the three stream files by timestamp, trading CPU at read time for 50% storage savings.
+### ~~3.4 Combined log is redundant storage~~ FIXED
+~~Every frame is written to both a stream-specific file and `combined.log`, doubling disk usage. The combined view could be reconstructed by merge-sorting the three stream files by timestamp, trading CPU at read time for 50% storage savings.~~
+**Fixed on master** (commit `332c9a7`, `69e70e3`). Removed combined.log writing entirely. Combined view now merge-sorts stdout/stderr/stdin by nanosecond timestamp at read time. All backward compatibility code removed.
 
 ### ~~3.5 `list_services` in `resolve_log_dir` loads all services for partial match (src/cli/logs.rs:55)~~ FIXED
 ~~A SQL `WHERE id LIKE ?1 || '%'` query would be far more efficient than loading all services and filtering in Rust.~~
@@ -138,8 +140,9 @@ Every frame is written to both a stream-specific file and `combined.log`, doubli
 ~~When wrapping a long-running process, brainlog provides no indication that it's capturing logs. A brief startup message (e.g., `[brainlog] Capturing output...` on stderr) would confirm it's active without polluting stdout.~~
 **Fixed on master** (commit `dae4753`). Added startup indicator showing which command is being captured.
 
-### 4.3 `list` output truncates service ID to 8 characters (src/cli/list.rs:42,91-96)
-IDs are UUIDs (36 chars) but only 8 are shown. With many services, 8-char prefixes may collide. Additionally, the `{:<8}` fixed width means IDs are never padded or truncated consistently — if the ID is shorter than 8 chars (it won't be, but the display assumes it).
+### ~~4.3 `list` output truncates service ID to 8 characters (src/cli/list.rs:42,91-96)~~ FIXED
+~~IDs are UUIDs (36 chars) but only 8 are shown. With many services, 8-char prefixes may collide. Additionally, the `{:<8}` fixed width means IDs are never padded or truncated consistently — if the ID is shorter than 8 chars (it won't be, but the display assumes it).~~
+**Fixed on master** (commit `6826ffc`). Added `unique_prefix_len()` that computes minimum prefix length (min 8) ensuring all IDs are uniquely identified. Applied to compact, verbose, and grouped display modes.
 
 ### ~~4.4 No way to delete services or runs~~ FIXED
 ~~There's no `brainlog delete` or `brainlog clean` command. Old services and their log files accumulate indefinitely. Users have no way to reclaim disk space short of manually deleting `~/.brainlog/`.~~
@@ -149,8 +152,9 @@ IDs are UUIDs (36 chars) but only 8 are shown. With many services, 8-char prefix
 ~~After a wrapped command finishes, brainlog exits silently. A brief summary on stderr (e.g., `[brainlog] Run abc12345 completed (exit 0), logs at ~/.brainlog/logs/...`) would help users find their logs.~~
 **Fixed on master** (commit `f14de06`). Prints completion summary with run ID and log path.
 
-### 4.6 `follow` mode has no way to exit cleanly (src/cli/logs.rs:75-87)
-The follow loop is infinite with no Ctrl+C handling or timeout. While Ctrl+C will kill the process, there's no "Press q to quit" or graceful shutdown messaging.
+### ~~4.6 `follow` mode has no way to exit cleanly (src/cli/logs.rs:75-87)~~ FIXED
+~~The follow loop is infinite with no Ctrl+C handling or timeout. While Ctrl+C will kill the process, there's no "Press q to quit" or graceful shutdown messaging.~~
+**Fixed on master** (commit `9a01ca0`). Follow mode uses `tokio::select!` to race `ctrl_c()` against the poll sleep. Prints "[brainlog] Following output... (Ctrl+C to stop)" on start and "[brainlog] Stopped following." on exit, with colour when stderr is a TTY. Both text and JSON follow modes handle Ctrl+C.
 
 ### ~~4.7 `search` date formatting loses timezone info (src/cli/search.rs:43)~~ FIXED
 ~~`DateTime::from_timestamp(...).unwrap_or_default()` creates a UTC datetime, but the `%H:%M:%S` format shows time without any timezone indicator. Users in non-UTC timezones will see confusing timestamps.~~
@@ -168,8 +172,9 @@ The follow loop is infinite with no Ctrl+C handling or timeout. While Ctrl+C wil
 ~~`brainlog logs nonexistent` returns `No service or run found matching 'nonexistent'` — it could suggest running `brainlog list` to see available services.~~
 **Fixed on master** (commit `c97deca`). Error messages now suggest `brainlog list` when a target is not found.
 
-### 4.11 No `--json` output option
-For scripting and piping, there's no way to get machine-readable output from `list`, `logs`, or `search`. The MCP server provides structured data, but CLI users have to parse tabular text.
+### ~~4.11 No `--json` output option~~ FIXED
+~~For scripting and piping, there's no way to get machine-readable output from `list`, `logs`, or `search`. The MCP server provides structured data, but CLI users have to parse tabular text.~~
+**Fixed on master** (commit `0447cbd`). Added `--json` flag to `list`, `logs`, and `search` commands. List outputs structured ServiceJson, logs outputs pretty-printed JsonFrame arrays (or NDJSON in follow mode), search outputs SearchResultJson with matches and context.
 
 ### ~~4.12 `search` only searches log content, not metadata~~ FIXED
 ~~`brainlog search false` intuitively feels like it should find the service that ran `false`, but it only searches log file content via regex. Users expect search to also match against command names, service names, ports, and tags.~~
@@ -251,10 +256,10 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 
 | Category | Critical | Major | Minor | Fixed |
 |----------|----------|-------|-------|-------|
-| Logic Errors | 0 | 0 | 2 (1.4, 1.6) | ~~1.1~~, ~~1.2~~, ~~1.3~~, ~~1.5~~, ~~1.7~~, ~~1.8~~, ~~1.9~~, ~~1.10~~, ~~1.11~~ |
+| Logic Errors | 0 | 0 | 1 (1.4) | ~~1.1~~, ~~1.2~~, ~~1.3~~, ~~1.5~~, ~~1.6~~, ~~1.7~~, ~~1.8~~, ~~1.9~~, ~~1.10~~, ~~1.11~~ |
 | Maintainability | 0 | 0 | 0 | ~~2.1~~, ~~2.2~~, ~~2.3~~, 2.4 (by design), ~~2.5~~, ~~2.6~~, ~~2.7~~, ~~2.8~~, ~~2.9~~, 2.10 (won't fix) |
-| Optimizations | 0 | 0 | 1 (3.4) | ~~3.1~~, ~~3.2~~, ~~3.3~~, ~~3.5~~, ~~3.6~~, ~~3.7~~, ~~3.8~~ |
-| UX | 0 | 1 (4.11) | 2 (4.3, 4.6) | ~~4.1~~, ~~4.2~~, ~~4.4~~, ~~4.5~~, ~~4.7~~, ~~4.8~~, ~~4.9~~, ~~4.10~~, ~~4.12~~ |
+| Optimizations | 0 | 0 | 0 | ~~3.1~~, ~~3.2~~, ~~3.3~~, ~~3.4~~, ~~3.5~~, ~~3.6~~, ~~3.7~~, ~~3.8~~ |
+| UX | 0 | 0 | 0 | ~~4.1~~, ~~4.2~~, ~~4.3~~, ~~4.4~~, ~~4.5~~, ~~4.6~~, ~~4.7~~, ~~4.8~~, ~~4.9~~, ~~4.10~~, ~~4.11~~, ~~4.12~~ |
 | Documentation | 0 | 1 (5.2) | 1 (5.6) | ~~5.1~~, ~~5.3~~, ~~5.4~~, ~~5.5~~, ~~5.7~~, ~~5.8~~ |
 | Security | 0 | 1 (6.6) | 6 | ~~6.1~~, ~~6.2~~ |
 
@@ -299,6 +304,11 @@ The enrichment system reads files matching configured patterns (package.json, Ca
 36. ~~Rich MCP tool descriptions (5.5)~~ -- DONE
 37. Database not Send (2.4) -- BY DESIGN (SQLite + WAL per-task connections is correct)
 38. async-trait (2.10) -- WON'T FIX (required for dyn LlmClient compatibility)
+39. ~~Combined log removed, merge-sort on read (3.4)~~ -- DONE
+40. ~~JSON output for list/logs/search (4.11)~~ -- DONE
+41. ~~Enrichment error logging (1.6)~~ -- DONE
+42. ~~Dynamic ID prefix length (4.3)~~ -- DONE
+43. ~~Follow mode Ctrl+C handling (4.6)~~ -- DONE
 
 ---
 

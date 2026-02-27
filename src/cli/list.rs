@@ -82,6 +82,31 @@ fn term_width() -> usize {
         .unwrap_or(120)
 }
 
+/// Calculate the minimum prefix length (at least `min`) so that every ID in
+/// `ids` is uniquely identified by its prefix.  If there are collisions at
+/// `min` characters, the length is increased one character at a time until
+/// all prefixes are distinct (up to the full ID length).
+fn unique_prefix_len(ids: &[&str], min: usize) -> usize {
+    use std::collections::HashSet;
+    if ids.is_empty() {
+        return min;
+    }
+    let max_possible = ids.iter().map(|id| id.len()).min().unwrap_or(min);
+    let mut len = min.min(max_possible);
+    loop {
+        let mut seen = HashSet::with_capacity(ids.len());
+        let unique = ids.iter().all(|id| {
+            let prefix = &id[..len.min(id.len())];
+            seen.insert(prefix)
+        });
+        if unique || len >= max_possible {
+            break;
+        }
+        len += 1;
+    }
+    len
+}
+
 /// Truncate a string to fit within `max_len`, appending `..` if truncated.
 fn truncate(s: &str, max_len: usize) -> String {
     if max_len < 3 {
@@ -158,9 +183,15 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
+    let svc_ids: Vec<&str> = services.iter().map(|s| s.id.as_str()).collect();
+    let id_prefix_len = unique_prefix_len(&svc_ids, 8);
+
     if args.verbose {
         for service in &services {
-            let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
+            let name_display = service
+                .name
+                .as_deref()
+                .unwrap_or(&service.id[..id_prefix_len]);
             let desc_display = service.description.as_deref().unwrap_or("(no description)");
 
             println!("ID:          {}", service.id);
@@ -182,7 +213,11 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
             }
 
             if let Some(run) = db.get_latest_run(&service.id)? {
-                println!("Latest Run:  {} ({})", &run.id[..8], run.status.as_str());
+                println!(
+                    "Latest Run:  {} ({})",
+                    &run.id[..id_prefix_len.min(run.id.len())],
+                    run.status.as_str()
+                );
                 println!("Started At:  {}", run.started_at);
                 if let Some(exit_code) = run.exit_code {
                     println!("Exit Code:   {}", exit_code);
@@ -207,8 +242,8 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Fixed-width columns: ID(8) + STATUS(12) + CREATED(20) + gaps(8) = 48
-    let fixed_cols = 48;
+    // Fixed-width columns: ID(dynamic) + STATUS(12) + CREATED(20) + gaps(8)
+    let fixed_cols = id_prefix_len + 12 + 20 + 8;
     let width = term_width();
     let available = width.saturating_sub(fixed_cols);
     // Split remaining space: ~40% name, ~60% command
@@ -218,27 +253,32 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
     let tty = stdout_is_tty();
     if tty {
         println!(
-            "{:<8}  {:<nw$}  {:<12}  {:<20}  {}",
+            "{:<iw$}  {:<nw$}  {:<12}  {:<20}  {}",
             "ID".bold(),
             format!("{:<nw$}", "NAME", nw = name_max).bold(),
             "STATUS".bold(),
             "CREATED".bold(),
             "COMMAND".bold(),
+            iw = id_prefix_len,
             nw = name_max
         );
     } else {
         println!(
-            "{:<8}  {:<nw$}  {:<12}  {:<20}  COMMAND",
+            "{:<iw$}  {:<nw$}  {:<12}  {:<20}  COMMAND",
             "ID",
             "NAME",
             "STATUS",
             "CREATED",
+            iw = id_prefix_len,
             nw = name_max
         );
     }
 
     for service in &services {
-        let name_display = service.name.as_deref().unwrap_or(&service.id[..8]);
+        let name_display = service
+            .name
+            .as_deref()
+            .unwrap_or(&service.id[..id_prefix_len]);
         let status_raw = if let Some(run) = db.get_latest_run(&service.id)? {
             run.status.as_str().to_string()
         } else {
@@ -253,12 +293,13 @@ pub async fn handle_list(args: ListArgs) -> Result<()> {
         let status_display = colour_status(&status_padded, tty);
 
         println!(
-            "{:<8}  {:<nw$}  {}  {:<20}  {}",
-            &service.id[..8],
+            "{:<iw$}  {:<nw$}  {}  {:<20}  {}",
+            &service.id[..id_prefix_len],
             truncate(name_display, name_max),
             status_display,
             created,
             truncate(&cmd, cmd_max),
+            iw = id_prefix_len,
             nw = name_max
         );
     }
@@ -318,6 +359,13 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Compute dynamic ID prefix length across all services in all groups.
+    let all_ids: Vec<&str> = groups
+        .iter()
+        .flat_map(|g| g.services.iter().map(|s| s.id.as_str()))
+        .collect();
+    let id_prefix_len = unique_prefix_len(&all_ids, 8);
+
     for group in &groups {
         let latest_ts = group
             .latest_run_at
@@ -368,11 +416,12 @@ fn handle_list_grouped(db: &Database, args: &ListArgs) -> Result<()> {
                 let status_padded = format!("{:<12}", status_raw);
                 let status_display = colour_status(&status_padded, tty);
                 println!(
-                    "    {} {:<20} {} {}",
-                    &svc.id[..8],
+                    "    {:<iw$} {:<20} {} {}",
+                    &svc.id[..id_prefix_len],
                     name,
                     status_display,
-                    svc.command_line.join(" ")
+                    svc.command_line.join(" "),
+                    iw = id_prefix_len
                 );
             }
         }

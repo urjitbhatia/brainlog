@@ -113,8 +113,9 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         }
     });
 
-    // SIGINT/SIGTERM listener: sets stop flag so wrapper exits between iterations
+    // SIGINT/SIGTERM listener: kills child process tree and sets stop flag
     let stop_flag = stop_requested.clone();
+    let child_pid_ref2 = current_child_pid.clone();
     let sigterm_handle = tokio::spawn(async move {
         let mut signals = match Signals::new([SIGINT, SIGTERM]) {
             Ok(s) => s,
@@ -125,6 +126,18 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
         };
         if signals.next().await.is_some() {
             stop_flag.store(true, Ordering::SeqCst);
+            // Kill the child process tree so spawn_wrapped returns
+            let pid = child_pid_ref2.load(Ordering::SeqCst);
+            if pid > 0 {
+                let tree = collect_process_tree(pid).await;
+                let mut kill_order: Vec<u32> = tree.iter().copied().filter(|&p| p != pid).collect();
+                kill_order.reverse();
+                kill_order.push(pid);
+                for target_pid in &kill_order {
+                    let nix_pid = Pid::from_raw(*target_pid as i32);
+                    let _ = signal::kill(nix_pid, Signal::SIGTERM);
+                }
+            }
         }
     });
 

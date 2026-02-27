@@ -48,9 +48,44 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         .pid
         .ok_or_else(|| anyhow::anyhow!("Service '{}' has no PID recorded", service_name))?;
 
+    // For catchable signals, send to the wrapper and let it handle the child tree.
+    // The wrapper's SIGTERM handler kills the child tree and exits cleanly.
+    // For SIGKILL (uncatchable), we must kill the child tree directly.
+    if signal != Signal::SIGKILL {
+        if let Some(wrapper_pid) = run.wrapper_pid {
+            if is_process_alive(wrapper_pid) {
+                let nix_pid = Pid::from_raw(wrapper_pid as i32);
+                signal::kill(nix_pid, signal).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to send {} to wrapper PID {}: {}",
+                        signal,
+                        wrapper_pid,
+                        e
+                    )
+                })?;
+                let tty = std::io::stdout().is_terminal();
+                if tty {
+                    println!(
+                        "{} Sent {} to '{}' (wrapper PID {})",
+                        "ok".green(),
+                        signal,
+                        service_name.bold(),
+                        wrapper_pid
+                    );
+                } else {
+                    println!(
+                        "Sent {} to '{}' (wrapper PID {})",
+                        signal, service_name, wrapper_pid
+                    );
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // Fallback: no wrapper, wrapper dead, or SIGKILL — kill child tree directly
     let tree = collect_process_tree(pid).await;
 
-    // Send signal to children first (reverse order: deepest children first), then parent
     let mut kill_order: Vec<u32> = tree.iter().copied().filter(|&p| p != pid).collect();
     kill_order.reverse();
     kill_order.push(pid);
@@ -74,11 +109,13 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         }
     }
 
-    // Also signal the wrapper to prevent auto-restart and trigger clean shutdown
-    if let Some(wrapper_pid) = run.wrapper_pid {
-        if wrapper_pid != pid && is_process_alive(wrapper_pid) {
-            let nix_pid = Pid::from_raw(wrapper_pid as i32);
-            let _ = signal::kill(nix_pid, Signal::SIGTERM);
+    // For SIGKILL, also kill the wrapper since it can't catch the signal itself
+    if signal == Signal::SIGKILL {
+        if let Some(wrapper_pid) = run.wrapper_pid {
+            if is_process_alive(wrapper_pid) {
+                let nix_pid = Pid::from_raw(wrapper_pid as i32);
+                let _ = signal::kill(nix_pid, Signal::SIGKILL);
+            }
         }
     }
 

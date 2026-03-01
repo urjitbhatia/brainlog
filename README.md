@@ -5,40 +5,62 @@
 <h1 align="center">brainlog</h1>
 
 <p align="center">
-Transparent process wrapper that captures stdout, stderr, and stdin streams with an MCP server for LLM agent access.
+Transparent process wrapper that captures stdout, stderr, and stdin — with an MCP server so LLM agents can read your terminal output.
 </p>
 
 ---
 
-Brainlog wraps any executable via PTY, recording every byte of I/O in a framed binary format while the process runs normally. An MCP server exposes the captured logs to LLM agents for discovery, retrieval, and search.
+Brainlog wraps any command via PTY, recording every byte of I/O while the process runs exactly as it would without brainlog. Colors, interactive prompts, TUI apps — everything works transparently. An MCP server gives LLM agents direct access to discover, read, search, and watch process output without the user copy-pasting anything.
 
 ## Install
 
-```
+```bash
 cargo install --path .
 ```
 
-## Usage
+Or with `cargo-binstall` (if a release binary is available):
 
-Wrap any command directly:
+```bash
+cargo binstall brainlog
+```
+
+## Quick start
+
+Wrap any command — brainlog is invisible to the process:
 
 ```bash
 brainlog node server.js
-brainlog -n my-api python app.py
+brainlog python app.py
+brainlog cargo build
+```
+
+Name your services for easy reference:
+
+```bash
+brainlog -n my-api node server.js
 brainlog -n worker -t env:prod -d "background job runner" ./run.sh
 ```
 
-Or use the explicit `run` subcommand:
+Auto-restart on exit:
 
 ```bash
-brainlog run -- cargo build
+brainlog run --restart -- node server.js
 ```
+
+Resume a previous service (new run, same name):
+
+```bash
+brainlog run --resume my-api -- node server.js
+```
+
+## CLI
 
 ### View logs
 
 ```bash
-brainlog list                     # list tracked services
-brainlog logs <service|run-id>    # view logs
+brainlog list                     # list tracked services (newest first)
+brainlog list -g                  # group by executable + working directory
+brainlog logs <id>                # view logs (by name, service ID, or run ID)
 brainlog logs <id> --tail 50      # last 50 lines
 brainlog logs <id> -f             # follow (like tail -f)
 brainlog logs <id> -s stderr      # stderr only
@@ -47,56 +69,86 @@ brainlog logs <id> -s stderr      # stderr only
 ### Search
 
 ```bash
-brainlog search "ERROR|WARN"
-brainlog search "panic" --service my-api
+brainlog search "ERROR|WARN"                    # regex across all services
+brainlog search "panic" --service my-api        # scoped to one service
 ```
 
-### MCP server
+### Process control
+
+```bash
+brainlog kill my-api              # send SIGTERM (graceful)
+brainlog kill my-api -f           # send SIGKILL (force)
+brainlog kill my-api -s HUP      # send specific signal
+brainlog restart my-api           # restart via wrapper (SIGUSR1)
+```
+
+### Housekeeping
+
+```bash
+brainlog purge --before 7d                     # delete services older than 7 days
+brainlog purge --before 1h --name tmp --dry-run # preview what would be purged
+```
+
+## MCP server
 
 ```bash
 brainlog mcp
 ```
 
-Exposes three tools over stdio transport:
+### Setup with Claude Code
+
+Add to your `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "brainlog": {
+      "command": "brainlog",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### Tools
 
 | Tool | Description |
 |------|-------------|
-| `discover_services` | Find tracked services by name, tags, port, executable, or status |
-| `get_logs` | Retrieve logs with head/tail/range modes |
-| `search_logs` | Regex search across services with timestamps and context |
+| `list_recent_runs` | Last N runs across all services, newest first — best for "what just happened?" |
+| `discover_services` | Find tracked services by name, cwd, tags, port, executable, status, or exit code |
+| `get_logs` | Read stdout/stderr/stdin by service ID, run ID, or working directory |
+| `search_logs` | Regex search across all services with timestamps |
+| `wait_for_pattern` | Block until a regex appears in output (like Playwright's `waitForText`) |
+| `kill_service` | Send a signal to stop a running process |
+| `restart_service` | Restart a running process via its wrapper |
+
+### Agent workflow
+
+1. **`list_recent_runs`** — "What just ran?" See the last N runs with status, exit codes, and optional log previews.
+2. **`discover_services`** — "What's running in this project?" Filter by `cwd` to scope to the current repo.
+3. **`get_logs`** — Read output by ID or by `cwd` shorthand (no need to discover first).
+4. **`search_logs`** — Find errors, warnings, or specific patterns across all tracked commands.
+5. **`wait_for_pattern`** — Start a server, then wait for `"listening on port 3000"` before proceeding.
+
+## How it works
+
+- **PTY proxy**: Brainlog allocates a pseudo-terminal so the wrapped process behaves identically — `isatty()` returns true, colors and interactive prompts work, terminal dimensions are inherited.
+- **Framed binary logs**: Every byte of stdout, stderr, and stdin is recorded with nanosecond timestamps in a compact frame format.
+- **Auto-naming**: Services without `-n` get a derived name from the working directory and executable (e.g. `myproject/node-a3f2c1`).
+- **LLM enrichment**: When configured, brainlog uses an LLM to generate a human-readable service name and description from the command line and initial output.
 
 ## Storage
 
 ```
 ~/.brainlog/
-  brainlog.db                          # SQLite (WAL mode) — service metadata
+  brainlog.db                          # SQLite (WAL mode) — service + run metadata
+  config.yaml                          # optional LLM enrichment config
   logs/<run-id>/
-    stdout.log, stderr.log, stdin.log  # framed binary logs
+    stdout.log, stderr.log, stdin.log  # per-stream framed binary logs
     combined.log                       # interleaved stream
 ```
 
 Frame format: `[timestamp_ns:u64 LE][stream_type:u8][length:u32 LE][payload]`
-
-## Agent Review
-
-**Score: 7/10** — Reviewed by Claude Code (Opus 4.6), 2026-02-22
-
-Used BrainLog MCP during a multi-step feature implementation (Slack notifications for auto-matched watchlist items). The core loop of discover → tail → search worked well and provided real value during end-to-end testing.
-
-**What worked well:**
-- Service discovery found the API server and web UI quickly
-- Tailing logs gave real-time visibility into server behavior without asking the user to copy/paste terminal output
-- Error search across services was fast and confirmed clean state after a database migration
-- Overall, the tool tightened the feedback loop between "user does something in the UI" and "agent verifies what happened server-side"
-
-**What would get it to 10/10:**
-- Service discovery returns too many unnamed entries (MCP self-instances, no auto-naming)
-- Log output includes raw ANSI escape codes — needs a strip option
-- Port auto-detection didn't work for the web UI
-- No incremental polling (`since` cursor) — had to re-fetch and eyeball diffs
-- A `wait_for_pattern` blocking call would be transformative for E2E observation
-
-See [UX_FEEDBACK.md](./UX_FEEDBACK.md) for detailed feedback.
 
 ## License
 

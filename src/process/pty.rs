@@ -33,8 +33,18 @@ pub async fn spawn_pty(
         None
     };
 
+    // Build child PTY termios: inherit parent settings but disable ECHOCTL.
+    // Without this, terminal query responses (DSR, OSC) echoed through the PTY's
+    // line discipline render ESC as visible "^[" garbage instead of passing through
+    // as raw escape bytes the outer terminal can silently consume.
+    let child_termios = saved_termios.as_ref().map(|t| {
+        let mut ct = t.clone();
+        ct.local_flags.remove(termios::LocalFlags::ECHOCTL);
+        ct
+    });
+
     // forkpty - returns an enum in nix 0.29
-    let fork_result = unsafe { nix::pty::forkpty(None, None)? };
+    let fork_result = unsafe { nix::pty::forkpty(None, child_termios.as_ref())? };
 
     match fork_result {
         ForkptyResult::Child => {
@@ -111,10 +121,15 @@ async fn run_pty_pump(master: OwnedFd, child: Pid, tx: mpsc::Sender<Frame>) -> R
                 Ok(0) => break,
                 Ok(n) => {
                     let payload = buf[..n].to_vec();
-                    if let Err(e) =
-                        std::io::Write::write_all(&mut std::io::stdout().lock(), &payload)
                     {
-                        tracing::warn!("Failed to write PTY output to stdout: {e}");
+                        let mut out = std::io::stdout().lock();
+                        if let Err(e) = std::io::Write::write_all(&mut out, &payload) {
+                            tracing::warn!("Failed to write PTY output to stdout: {e}");
+                        }
+                        // Flush immediately so prompts without trailing newlines
+                        // (e.g. "[Y/n] ") appear right away instead of being
+                        // buffered by Rust's LineWriter until the next newline.
+                        let _ = std::io::Write::flush(&mut out);
                     }
                     if let Err(e) = tx_read.blocking_send(Frame {
                         timestamp_ns: now_ns(),

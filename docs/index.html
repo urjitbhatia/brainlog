@@ -54,6 +54,7 @@
       --space-4:  1rem;
       --space-6:  1.5rem;
       --space-8:  2rem;
+      --space-10: 2.5rem;
       --space-12: 3rem;
       --space-16: 4rem;
       --space-20: 5rem;
@@ -275,11 +276,13 @@
       overflow: hidden;
     }
 
-    /* Compensate for scrollbar: add its width as left padding so text-align:center
-       centers relative to the viewport, not the scrollbar-narrowed body.
-       On overlay-scrollbar systems (100vw == 100%), this evaluates to 0. */
+    /* Compensate for scrollbar so hero content centers relative to the viewport.
+       On overlay-scrollbar systems (100vw == 100%), the extra evaluates to 0. */
     #hero .container {
-      padding-left: calc(var(--space-6) + (100vw - 100%));
+      margin-left: auto;
+      margin-right: auto;
+      padding-left: var(--space-6);
+      padding-right: var(--space-6);
     }
 
     /* Radial gradient background glow behind hero */
@@ -330,6 +333,8 @@
       max-width: 560px;
       margin: 0 auto var(--space-10);
       line-height: 1.65;
+      text-align: center;
+      text-wrap: balance;
     }
 
     .hero-tagline em {
@@ -419,6 +424,7 @@
       color: var(--text-code);
       overflow-x: auto;
       position: relative;
+      white-space: pre;
     }
 
     .code-block.copyable {

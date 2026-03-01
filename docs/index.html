@@ -275,6 +275,13 @@
       overflow: hidden;
     }
 
+    /* Compensate for scrollbar: add its width as left padding so text-align:center
+       centers relative to the viewport, not the scrollbar-narrowed body.
+       On overlay-scrollbar systems (100vw == 100%), this evaluates to 0. */
+    #hero .container {
+      padding-left: calc(var(--space-6) + (100vw - 100%));
+    }
+
     /* Radial gradient background glow behind hero */
     #hero::before {
       content: '';

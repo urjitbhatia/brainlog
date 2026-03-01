@@ -107,8 +107,8 @@ pub struct ListRecentRunsResponse {
 
 #[derive(Debug, Serialize)]
 pub struct RecentRunInfo {
-    pub run_id: String,
-    pub service_id: String,
+    /// Run identifier — pass this directly to get_logs, search_logs, or wait_for_pattern
+    pub id: String,
     pub service_name: Option<String>,
     pub executable: String,
     pub command_line: Vec<String>,

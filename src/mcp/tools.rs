@@ -39,8 +39,7 @@ pub fn list_recent_runs(
                 None
             };
             RecentRunInfo {
-                run_id: run.id,
-                service_id: service.id,
+                id: run.id,
                 service_name: service.name,
                 executable: service.executable,
                 command_line: service.command_line,

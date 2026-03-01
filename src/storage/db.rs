@@ -164,9 +164,12 @@ impl Database {
     }
 
     pub fn get_latest_run(&self, service_id: &str) -> Result<Option<Run>> {
+        // Prefer a currently running run; fall back to most recent by start time.
         let mut stmt = self.conn.prepare(
             "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid
-             FROM runs WHERE service_id = ?1 ORDER BY started_at DESC LIMIT 1",
+             FROM runs WHERE service_id = ?1
+             ORDER BY (CASE WHEN status = 'running' THEN 0 ELSE 1 END), started_at DESC
+             LIMIT 1",
         )?;
         let mut rows = stmt.query(params![service_id])?;
         if let Some(row) = rows.next()? {
@@ -398,26 +401,59 @@ impl Database {
         Ok(services)
     }
 
+    /// Find runs whose ID starts with the given prefix.
+    /// Returns at most `limit` matches, useful for prefix-based resolution.
+    pub fn find_runs_by_id_prefix(&self, prefix: &str, limit: usize) -> Result<Vec<Run>> {
+        let pattern = format!("{}%", prefix);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid
+             FROM runs WHERE id LIKE ?1 LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, limit as i64], row_to_run)?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
     /// Resolve a user-provided identifier to a log directory path.
     ///
     /// Resolution order:
     /// 1. Exact match on run ID
-    /// 2. Exact match on service ID (returns latest run's log_dir)
-    /// 3. Exact match on service name (returns latest run's log_dir)
-    /// 4. Prefix match on service ID (exactly 1 match required)
-    /// 5. Error with helpful suggestion
+    /// 2. Prefix match on run ID (exactly 1 match required)
+    /// 3. Exact match on service ID (returns latest run's log_dir)
+    /// 4. Exact match on service name (returns latest run's log_dir)
+    /// 5. Prefix match on service ID (exactly 1 match required)
+    /// 6. Error with helpful suggestion
     pub fn resolve_log_dir(&self, id: &str) -> Result<String> {
-        // 1. Try as run ID first
+        // 1. Try as exact run ID
         if let Some(run) = self.get_run(id)? {
             return Ok(run.log_dir);
         }
 
-        // 2. Try as service ID — get latest run
+        // 2. Try as run ID prefix
+        let run_matches = self.find_runs_by_id_prefix(id, 2)?;
+        match run_matches.len() {
+            1 => return Ok(run_matches.into_iter().next().unwrap().log_dir),
+            n if n > 1 => {
+                let ids: Vec<_> = run_matches.iter().map(|r| r.id.as_str()).collect();
+                anyhow::bail!(
+                    "Ambiguous prefix '{}' matches {} runs: {}",
+                    id,
+                    n,
+                    ids.join(", ")
+                );
+            }
+            _ => {}
+        }
+
+        // 3. Try as service ID — get latest run
         if let Some(run) = self.get_latest_run(id)? {
             return Ok(run.log_dir);
         }
 
-        // 3. Try as service name
+        // 4. Try as service name
         if let Some(service) = self.find_service_by_name(id)? {
             if let Some(run) = self.get_latest_run(&service.id)? {
                 return Ok(run.log_dir);
@@ -425,7 +461,7 @@ impl Database {
             anyhow::bail!("Service '{}' has no runs", id);
         }
 
-        // 4. Try prefix match on service ID (SQL LIKE query, limit to 2 to detect ambiguity)
+        // 5. Try prefix match on service ID (SQL LIKE query, limit to 2 to detect ambiguity)
         let matches = self.find_services_by_id_prefix(id, 2)?;
 
         match matches.len() {
@@ -466,7 +502,7 @@ impl Database {
              FROM runs r
              JOIN services s ON r.service_id = s.id
              WHERE s.working_dir LIKE ?1
-             ORDER BY r.started_at DESC
+             ORDER BY (CASE WHEN r.status = 'running' THEN 0 ELSE 1 END), r.started_at DESC
              LIMIT 1",
         )?;
         let mut rows = stmt.query(params![pattern])?;

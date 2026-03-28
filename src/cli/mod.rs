@@ -34,6 +34,7 @@ pub enum Commands {
     /// Search logs by pattern
     Search(SearchArgs),
     /// Send a signal to a running monitored process
+    #[command(alias = "stop")]
     Kill(KillArgs),
     /// Start the MCP server (stdio transport)
     Mcp,
@@ -233,7 +234,25 @@ fn is_known_subcommand(name: &str) -> bool {
     }
     Cli::command()
         .get_subcommands()
-        .any(|cmd| cmd.get_name() == name)
+        .any(|cmd| cmd.get_name() == name || cmd.get_all_aliases().any(|a| a == name))
+}
+
+/// Check whether an executable exists in PATH (or is an absolute/relative path that exists).
+fn executable_exists(name: &str) -> bool {
+    let path = std::path::Path::new(name);
+    // Absolute or relative path with separator — check the file directly
+    if name.contains(std::path::MAIN_SEPARATOR) || name.contains('/') {
+        return path.is_file();
+    }
+    // Search PATH
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            if dir.join(name).is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Parse direct mode arguments from argv.
@@ -310,6 +329,12 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
         return None;
     }
 
+    // If the executable doesn't exist in PATH, don't treat this as direct mode.
+    // Fall through to clap, which will show a proper "unknown subcommand" error.
+    if !executable_exists(&command[0]) {
+        return None;
+    }
+
     Some(RunArgs {
         name,
         resume,
@@ -330,18 +355,18 @@ mod tests {
 
     #[test]
     fn direct_mode_simple_command() {
-        let result = parse_direct_mode(&args(&["brainlog", "node", "server.js"]));
+        let result = parse_direct_mode(&args(&["brainlog", "ls", "-la"]));
         let run_args = result.unwrap();
-        assert_eq!(run_args.command, vec!["node", "server.js"]);
+        assert_eq!(run_args.command, vec!["ls", "-la"]);
         assert!(run_args.name.is_none());
     }
 
     #[test]
     fn direct_mode_with_name_flag() {
-        let result = parse_direct_mode(&args(&["brainlog", "-n", "my-app", "python", "app.py"]));
+        let result = parse_direct_mode(&args(&["brainlog", "-n", "my-app", "cat", "app.py"]));
         let run_args = result.unwrap();
         assert_eq!(run_args.name.as_deref(), Some("my-app"));
-        assert_eq!(run_args.command, vec!["python", "app.py"]);
+        assert_eq!(run_args.command, vec!["cat", "app.py"]);
     }
 
     #[test]
@@ -354,14 +379,14 @@ mod tests {
             "env:prod",
             "--desc",
             "my service",
-            "cargo",
-            "run",
+            "ls",
+            "-la",
         ]));
         let run_args = result.unwrap();
         assert_eq!(run_args.name.as_deref(), Some("svc"));
         assert_eq!(run_args.tag, vec!["env:prod"]);
         assert_eq!(run_args.desc.as_deref(), Some("my service"));
-        assert_eq!(run_args.command, vec!["cargo", "run"]);
+        assert_eq!(run_args.command, vec!["ls", "-la"]);
     }
 
     #[test]
@@ -372,6 +397,7 @@ mod tests {
             "logs",
             "search",
             "kill",
+            "stop", // alias for kill
             "mcp",
             "purge",
             "restart",
@@ -400,10 +426,9 @@ mod tests {
     #[test]
     fn flag_without_value_becomes_command() {
         // --name with no value => break out of flag parsing, "--name" treated as the command
+        // "--name" is not an executable in PATH, so direct mode returns None
         let result = parse_direct_mode(&args(&["brainlog", "--name"]));
-        let run_args = result.unwrap();
-        assert_eq!(run_args.command, vec!["--name"]);
-        assert!(run_args.name.is_none());
+        assert!(result.is_none());
     }
 
     #[test]
@@ -424,25 +449,19 @@ mod tests {
 
     #[test]
     fn direct_mode_with_resume_flag() {
-        let result = parse_direct_mode(&args(&[
-            "brainlog",
-            "--resume",
-            "my-app",
-            "node",
-            "server.js",
-        ]));
+        let result = parse_direct_mode(&args(&["brainlog", "--resume", "my-app", "ls", "-la"]));
         let run_args = result.unwrap();
         assert_eq!(run_args.resume.as_deref(), Some("my-app"));
-        assert_eq!(run_args.command, vec!["node", "server.js"]);
+        assert_eq!(run_args.command, vec!["ls", "-la"]);
         assert!(run_args.name.is_none());
     }
 
     #[test]
     fn direct_mode_with_resume_short_flag() {
-        let result = parse_direct_mode(&args(&["brainlog", "-r", "my-app", "python", "app.py"]));
+        let result = parse_direct_mode(&args(&["brainlog", "-r", "my-app", "cat", "app.py"]));
         let run_args = result.unwrap();
         assert_eq!(run_args.resume.as_deref(), Some("my-app"));
-        assert_eq!(run_args.command, vec!["python", "app.py"]);
+        assert_eq!(run_args.command, vec!["cat", "app.py"]);
     }
 
     #[test]
@@ -453,13 +472,33 @@ mod tests {
             "my-app",
             "--tag",
             "env:staging",
-            "cargo",
-            "run",
+            "ls",
+            "-la",
         ]));
         let run_args = result.unwrap();
         assert_eq!(run_args.resume.as_deref(), Some("my-app"));
         assert_eq!(run_args.tag, vec!["env:staging"]);
-        assert_eq!(run_args.command, vec!["cargo", "run"]);
+        assert_eq!(run_args.command, vec!["ls", "-la"]);
+    }
+
+    #[test]
+    fn nonexistent_command_returns_none() {
+        // "stop" is not a real executable — should not enter direct mode
+        let result = parse_direct_mode(&args(&["brainlog", "stop", "9cd0a763"]));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn nonexistent_command_with_flags_returns_none() {
+        let result = parse_direct_mode(&args(&["brainlog", "-n", "svc", "xyznotreal123"]));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn absolute_path_command() {
+        let result = parse_direct_mode(&args(&["brainlog", "/bin/ls"]));
+        let run_args = result.unwrap();
+        assert_eq!(run_args.command, vec!["/bin/ls"]);
     }
 
     // --- Tag validation tests ---

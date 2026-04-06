@@ -941,6 +941,286 @@
       user-select: none;
     }
 
+    /* ─── Setup Tabs ───────────────────────────────────────────────────── */
+    .setup-tabs {
+      display: flex;
+      gap: var(--space-1);
+      margin-bottom: 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .setup-tab {
+      padding: var(--space-2) var(--space-4);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .setup-tab:hover {
+      color: var(--text-primary);
+    }
+
+    .setup-tab.active {
+      color: var(--amber-light);
+      border-bottom-color: var(--amber);
+    }
+
+    .setup-tab:focus-visible {
+      outline: 2px solid var(--amber);
+      outline-offset: -2px;
+      border-radius: 3px 3px 0 0;
+    }
+
+    .setup-panel {
+      display: none;
+      padding-top: var(--space-6);
+    }
+
+    .setup-panel.active {
+      display: block;
+    }
+
+    /* ─── Wait-for-pattern Showcase ────────────────────────────────────── */
+    #wait-for-pattern {
+      background: var(--bg-surface);
+      overflow: hidden;
+    }
+
+    .wfp-card {
+      position: relative;
+      border-radius: var(--radius-lg);
+      /* gradient border via padding + pseudo-element technique */
+      background: var(--bg-card);
+      padding: 1px; /* creates space for the gradient border */
+    }
+
+    .wfp-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: var(--radius-lg);
+      padding: 1px;
+      background: linear-gradient(
+        135deg,
+        rgba(201, 139, 92, 0.55) 0%,
+        rgba(123, 181, 160, 0.12) 40%,
+        rgba(123, 181, 160, 0.55) 100%
+      );
+      -webkit-mask:
+        linear-gradient(#fff 0 0) content-box,
+        linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+    }
+
+    .wfp-card-inner {
+      border-radius: calc(var(--radius-lg) - 1px);
+      background: var(--bg-card);
+      padding: var(--space-10) var(--space-10);
+      box-shadow:
+        0 0 80px rgba(201, 139, 92, 0.06),
+        0 0 80px rgba(123, 181, 160, 0.06);
+    }
+
+    @media (max-width: 768px) {
+      .wfp-card-inner { padding: var(--space-8) var(--space-6); }
+    }
+
+    .wfp-layout {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: var(--space-12);
+      align-items: center;
+    }
+
+    @media (max-width: 860px) {
+      .wfp-layout { grid-template-columns: 1fr; gap: var(--space-8); }
+    }
+
+    .wfp-prose .section-label {
+      color: var(--teal);
+    }
+
+    .wfp-heading {
+      font-size: clamp(1.375rem, 3.5vw, 2rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.18;
+      color: var(--text-primary);
+      margin-bottom: var(--space-4);
+    }
+
+    .wfp-heading em {
+      font-style: normal;
+      background: linear-gradient(120deg, var(--amber-light) 0%, var(--teal-light) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .wfp-body {
+      font-size: 0.9375rem;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      margin-bottom: var(--space-6);
+    }
+
+    .wfp-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-2);
+    }
+
+    .wfp-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-1) var(--space-3);
+      border-radius: 999px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      font-weight: 500;
+      border: 1px solid;
+    }
+
+    .wfp-pill.amber {
+      background: rgba(201, 139, 92, 0.1);
+      border-color: var(--border-amber);
+      color: var(--amber-light);
+    }
+
+    .wfp-pill.teal {
+      background: rgba(123, 181, 160, 0.1);
+      border-color: var(--border-teal);
+      color: var(--teal-light);
+    }
+
+    .wfp-pill svg {
+      flex-shrink: 0;
+    }
+
+    /* Terminal showcase */
+    .wfp-terminal {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      line-height: 1.75;
+    }
+
+    .wfp-terminal-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-3) var(--space-4);
+      background: rgba(255,255,255,0.025);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .wfp-terminal-header .terminal-dot { }
+
+    .wfp-terminal-title {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      margin-left: var(--space-1);
+      letter-spacing: 0.02em;
+    }
+
+    .wfp-block {
+      padding: var(--space-4) var(--space-6);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .wfp-block:last-child {
+      border-bottom: none;
+    }
+
+    .wfp-block-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: var(--space-2);
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    .wfp-block-label.step-start { color: var(--text-muted); }
+    .wfp-block-label.step-call  { color: var(--amber-dim); }
+    .wfp-block-label.step-wait  { color: var(--text-muted); }
+    .wfp-block-label.step-match { color: var(--teal-dim); }
+    .wfp-block-label.step-ready { color: var(--text-muted); }
+
+    .wfp-block-label .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
+
+    .wfp-block-label .badge.blocking {
+      background: rgba(201, 139, 92, 0.14);
+      color: var(--amber);
+      border: 1px solid rgba(201, 139, 92, 0.3);
+    }
+
+    .wfp-block-label .badge.matched {
+      background: rgba(123, 181, 160, 0.14);
+      color: var(--teal);
+      border: 1px solid rgba(123, 181, 160, 0.3);
+    }
+
+    .wfp-line {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-2);
+    }
+
+    .wfp-line .p  { color: var(--teal-dim); user-select: none; }
+    .wfp-line .c  { color: var(--text-muted); }
+    .wfp-line .fn { color: var(--teal-light); }
+    .wfp-line .kw { color: var(--amber-light); }
+    .wfp-line .str{ color: var(--teal-light); }
+    .wfp-line .num{ color: var(--amber); }
+    .wfp-line .key{ color: var(--text-secondary); }
+    .wfp-line .val{ color: var(--text-code); }
+    .wfp-line .ok { color: var(--teal-light); font-weight: 600; }
+
+    /* Pulsing "waiting" dot */
+    .pulse-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--amber);
+      animation: pulse-glow 1.6s ease-in-out infinite;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.35; transform: scale(0.75); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .pulse-dot { animation: none; }
+    }
+
     /* ─── Utility ───────────────────────────────────────────────────────── */
     .sr-only {
       position: absolute;
@@ -977,6 +1257,7 @@
       </a>
       <ul class="nav-links" role="list">
         <li><a href="#features">Features</a></li>
+        <li><a href="#wait-for-pattern">wait_for_pattern</a></li>
         <li><a href="#quickstart">Quick Start</a></li>
         <li><a href="#cli">CLI</a></li>
         <li><a href="#mcp-tools">MCP Tools</a></li>
@@ -1145,6 +1426,164 @@
       </div>
     </section>
 
+    <!-- wait_for_pattern Showcase -->
+    <section id="wait-for-pattern" aria-labelledby="wfp-heading">
+      <div class="container">
+        <div class="wfp-card fade-in">
+          <div class="wfp-card-inner">
+            <div class="wfp-layout">
+
+              <!-- Left: prose -->
+              <div class="wfp-prose">
+                <span class="section-label">Killer Feature</span>
+                <h2 class="wfp-heading" id="wfp-heading">
+                  Your agent waits for<br>
+                  <em>exactly the right moment</em>
+                </h2>
+                <p class="wfp-body">
+                  Instead of sleeping blindly and hoping a server is up,
+                  <code style="font-family:var(--font-mono);color:var(--teal-light);font-size:0.875em">wait_for_pattern</code>
+                  blocks until a regex appears in the process output — then returns
+                  immediately. Like Playwright's <code style="font-family:var(--font-mono);color:var(--amber-light);font-size:0.875em">waitForText</code>,
+                  but for any terminal process.
+                </p>
+                <p class="wfp-body" style="margin-bottom: var(--space-6);">
+                  No polling loops. No arbitrary timeouts. No racing against a
+                  server that isn't ready yet. The agent proceeds with
+                  certainty.
+                </p>
+                <div class="wfp-pill-row">
+                  <span class="wfp-pill amber">
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                      <circle cx="6" cy="6" r="4.5"/>
+                      <path d="M6 3.5v2.75l1.5 1.5"/>
+                    </svg>
+                    configurable timeout
+                  </span>
+                  <span class="wfp-pill teal">
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                      <path d="M2 6.5l3 3 5-5.5"/>
+                    </svg>
+                    regex pattern
+                  </span>
+                  <span class="wfp-pill teal">
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                      <path d="M2 6.5l3 3 5-5.5"/>
+                    </svg>
+                    returns matched line
+                  </span>
+                  <span class="wfp-pill amber">
+                    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                      <path d="M2 6.5l3 3 5-5.5"/>
+                    </svg>
+                    works on running processes
+                  </span>
+                </div>
+              </div>
+
+              <!-- Right: annotated terminal -->
+              <div class="wfp-terminal-wrap" aria-label="wait_for_pattern workflow example">
+                <div class="wfp-terminal" role="img" aria-label="Code example showing an agent starting a dev server with brainlog, calling wait_for_pattern with the regex listening on port 3000, blocking until the match, then proceeding">
+
+                  <div class="wfp-terminal-header" aria-hidden="true">
+                    <div class="terminal-dot"></div>
+                    <div class="terminal-dot"></div>
+                    <div class="terminal-dot"></div>
+                    <span class="wfp-terminal-title">agent tool calls</span>
+                  </div>
+
+                  <!-- Step 1: start the server -->
+                  <div class="wfp-block">
+                    <div class="wfp-block-label step-start" aria-hidden="true">
+                      Step 1 — start the dev server
+                    </div>
+                    <div class="wfp-line">
+                      <span class="p">$&nbsp;</span>
+                      <span><span class="kw">brainlog</span> <span class="val">-n dev-server npm run dev</span></span>
+                    </div>
+                    <div class="wfp-line" style="margin-top:0.25rem">
+                      <span class="p">&nbsp;&nbsp;</span>
+                      <span class="c"># server starts in background, I/O is captured</span>
+                    </div>
+                  </div>
+
+                  <!-- Step 2: call wait_for_pattern -->
+                  <div class="wfp-block">
+                    <div class="wfp-block-label step-call" aria-hidden="true">
+                      Step 2 — call wait_for_pattern
+                      <span class="badge blocking">blocking</span>
+                    </div>
+                    <div class="wfp-line">
+                      <span class="fn">wait_for_pattern</span><span class="val">(</span>
+                    </div>
+                    <div class="wfp-line" style="padding-left:1.25rem">
+                      <span class="key">service:</span>&nbsp;<span class="str">"dev-server"</span><span class="val">,</span>
+                    </div>
+                    <div class="wfp-line" style="padding-left:1.25rem">
+                      <span class="key">pattern:</span>&nbsp;<span class="str">"listening on port 3000"</span><span class="val">,</span>
+                    </div>
+                    <div class="wfp-line" style="padding-left:1.25rem">
+                      <span class="key">timeout_secs:</span>&nbsp;<span class="num">30</span>
+                    </div>
+                    <div class="wfp-line">
+                      <span class="val">)</span>
+                    </div>
+                  </div>
+
+                  <!-- Step 3: waiting state -->
+                  <div class="wfp-block">
+                    <div class="wfp-block-label step-wait" aria-hidden="true">
+                      <span class="pulse-dot" aria-hidden="true"></span>
+                      &nbsp;waiting for pattern…
+                    </div>
+                    <div class="wfp-line">
+                      <span class="c">&nbsp;&nbsp;[server] compiling routes…</span>
+                    </div>
+                    <div class="wfp-line">
+                      <span class="c">&nbsp;&nbsp;[server] bundling assets…</span>
+                    </div>
+                    <div class="wfp-line">
+                      <span class="c">&nbsp;&nbsp;[server] warming caches…</span>
+                    </div>
+                  </div>
+
+                  <!-- Step 4: match found -->
+                  <div class="wfp-block">
+                    <div class="wfp-block-label step-match" aria-hidden="true">
+                      Step 3 — pattern matched
+                      <span class="badge matched">matched</span>
+                    </div>
+                    <div class="wfp-line">
+                      <span class="key">matched_line:</span>&nbsp;<span class="str">"Server listening on port 3000"</span>
+                    </div>
+                    <div class="wfp-line">
+                      <span class="key">elapsed_ms:</span>&nbsp;<span class="num">4312</span>
+                    </div>
+                  </div>
+
+                  <!-- Step 5: agent proceeds -->
+                  <div class="wfp-block">
+                    <div class="wfp-block-label step-ready" aria-hidden="true">
+                      Step 4 — agent proceeds with certainty
+                    </div>
+                    <div class="wfp-line">
+                      <span class="c"># server is ready — run e2e tests, open browser, deploy</span>
+                    </div>
+                    <div class="wfp-line" style="margin-top:0.2rem">
+                      <span class="fn">run_tests</span><span class="val">(</span><span class="key">base_url:</span>&nbsp;<span class="str">"http://localhost:3000"</span><span class="val">)</span>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+              <!-- end right column -->
+
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Quick Start -->
     <section id="quickstart" aria-labelledby="quickstart-heading">
       <div class="container">
@@ -1182,25 +1621,98 @@
           </div>
         </div>
 
-        <div style="margin-top: var(--space-8);" class="fade-in">
-          <h3 style="font-size:1rem;font-weight:600;color:var(--text-primary);margin-bottom:var(--space-4);">Setup with Claude Code</h3>
-          <p style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:var(--space-4);">Add to <code style="font-family:var(--font-mono);color:var(--amber-light);font-size:0.85em">~/.claude/settings.json</code>:</p>
-          <div class="terminal">
-            <div class="terminal-header" aria-hidden="true">
-              <div class="terminal-dot"></div>
-              <div class="terminal-dot"></div>
-              <div class="terminal-dot"></div>
-              <span class="terminal-title">~/.claude/settings.json</span>
+        <!-- Agent Setup -->
+        <div style="margin-top: var(--space-12);" class="fade-in">
+          <div class="section-header" style="margin-bottom: var(--space-6);">
+            <span class="section-label">Agent Setup</span>
+            <h3 class="section-heading" style="font-size:1.25rem;">Connect to your agent</h3>
+            <p class="section-sub">Brainlog speaks MCP — add it to any agent that supports the protocol.</p>
+          </div>
+
+          <!-- Tab buttons -->
+          <div class="setup-tabs" role="tablist" aria-label="Agent setup instructions">
+            <button class="setup-tab active" role="tab" aria-selected="true" aria-controls="setup-claude" id="tab-claude" onclick="switchSetupTab('claude')">Claude Code</button>
+            <button class="setup-tab" role="tab" aria-selected="false" aria-controls="setup-codex" id="tab-codex" onclick="switchSetupTab('codex')">OpenAI Codex</button>
+            <button class="setup-tab" role="tab" aria-selected="false" aria-controls="setup-cursor" id="tab-cursor" onclick="switchSetupTab('cursor')">Cursor</button>
+            <button class="setup-tab" role="tab" aria-selected="false" aria-controls="setup-json" id="tab-json" onclick="switchSetupTab('json')">Raw JSON</button>
+          </div>
+
+          <!-- Claude Code -->
+          <div class="setup-panel active" id="setup-claude" role="tabpanel" aria-labelledby="tab-claude">
+            <p style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:var(--space-4);">One command — globally available across all projects:</p>
+            <div class="terminal">
+              <div class="terminal-header" aria-hidden="true">
+                <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+                <span class="terminal-title">terminal</span>
+              </div>
+              <div class="terminal-body">
+                <div><span class="prompt">$ </span><span class="cmd hl-amber">claude</span> <span class="cmd">mcp add brainlog -- brainlog mcp</span></div>
+                <div>&nbsp;</div>
+                <div><span class="prompt"># Or scope to a single project</span></div>
+                <div><span class="prompt">$ </span><span class="cmd hl-amber">claude</span> <span class="cmd">mcp add --scope project brainlog -- brainlog mcp</span></div>
+              </div>
             </div>
-            <div class="terminal-body">
-              <div><span class="cmd">{</span></div>
-              <div><span class="cmd">&nbsp;&nbsp;<span class="hl-teal">"mcpServers"</span>: {</span></div>
-              <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"brainlog"</span>: {</span></div>
-              <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"command"</span>: <span class="hl-amber">"brainlog"</span>,</span></div>
-              <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"args"</span>: [<span class="hl-amber">"mcp"</span>]</span></div>
-              <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
-              <div><span class="cmd">&nbsp;&nbsp;}</span></div>
-              <div><span class="cmd">}</span></div>
+          </div>
+
+          <!-- OpenAI Codex -->
+          <div class="setup-panel" id="setup-codex" role="tabpanel" aria-labelledby="tab-codex" hidden>
+            <p style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:var(--space-4);">Add to <code style="font-family:var(--font-mono);color:var(--amber-light);font-size:0.85em">codex.json</code> or your project config:</p>
+            <div class="terminal">
+              <div class="terminal-header" aria-hidden="true">
+                <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+                <span class="terminal-title">codex.json</span>
+              </div>
+              <div class="terminal-body">
+                <div><span class="cmd">{</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;<span class="hl-teal">"mcpServers"</span>: {</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"brainlog"</span>: {</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"command"</span>: <span class="hl-amber">"brainlog"</span>,</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"args"</span>: [<span class="hl-amber">"mcp"</span>]</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;}</span></div>
+                <div><span class="cmd">}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Cursor -->
+          <div class="setup-panel" id="setup-cursor" role="tabpanel" aria-labelledby="tab-cursor" hidden>
+            <p style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:var(--space-4);">Add to <code style="font-family:var(--font-mono);color:var(--amber-light);font-size:0.85em">.cursor/mcp.json</code> in your project root:</p>
+            <div class="terminal">
+              <div class="terminal-header" aria-hidden="true">
+                <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+                <span class="terminal-title">.cursor/mcp.json</span>
+              </div>
+              <div class="terminal-body">
+                <div><span class="cmd">{</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;<span class="hl-teal">"mcpServers"</span>: {</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"brainlog"</span>: {</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"command"</span>: <span class="hl-amber">"brainlog"</span>,</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"args"</span>: [<span class="hl-amber">"mcp"</span>]</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;}</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;}</span></div>
+                <div><span class="cmd">}</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Raw JSON -->
+          <div class="setup-panel" id="setup-json" role="tabpanel" aria-labelledby="tab-json" hidden>
+            <p style="font-size:0.9rem;color:var(--text-secondary);margin-bottom:var(--space-4);">Standard MCP server config — works with any MCP-compatible agent:</p>
+            <div class="terminal">
+              <div class="terminal-header" aria-hidden="true">
+                <div class="terminal-dot"></div><div class="terminal-dot"></div><div class="terminal-dot"></div>
+                <span class="terminal-title">mcp config</span>
+              </div>
+              <div class="terminal-body">
+                <div><span class="cmd">{</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;<span class="hl-teal">"brainlog"</span>: {</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"command"</span>: <span class="hl-amber">"brainlog"</span>,</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"args"</span>: [<span class="hl-amber">"mcp"</span>],</span></div>
+                <div><span class="cmd">&nbsp;&nbsp;&nbsp;&nbsp;<span class="hl-teal">"transport"</span>: <span class="hl-amber">"stdio"</span></span></div>
+                <div><span class="cmd">&nbsp;&nbsp;}</span></div>
+                <div><span class="cmd">}</span></div>
+              </div>
             </div>
           </div>
         </div>
@@ -1512,6 +2024,23 @@
       document.querySelectorAll('.fade-in').forEach((el) => {
         el.classList.add('visible');
       });
+    }
+
+    // ── Setup tab switcher ─────────────────────────────────────────────────
+    function switchSetupTab(id) {
+      document.querySelectorAll('.setup-tab').forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
+      document.querySelectorAll('.setup-panel').forEach(p => {
+        p.classList.remove('active');
+        p.hidden = true;
+      });
+      document.getElementById('tab-' + id).classList.add('active');
+      document.getElementById('tab-' + id).setAttribute('aria-selected', 'true');
+      const panel = document.getElementById('setup-' + id);
+      panel.classList.add('active');
+      panel.hidden = false;
     }
 
     // ── Copy-to-clipboard ─────────────────────────────────────────────────

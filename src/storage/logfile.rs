@@ -992,9 +992,9 @@ mod tests {
         // read_head(3) should return exactly the first 3 frames
         let head3 = reader.read_head(3).unwrap();
         assert_eq!(head3.len(), 3);
-        for i in 0..3 {
-            assert_eq!(head3[i].payload, format!("line{}\n", i).as_bytes());
-            assert_eq!(head3[i].timestamp_ns, i as u64 * 1000);
+        for (i, frame) in head3.iter().enumerate() {
+            assert_eq!(frame.payload, format!("line{}\n", i).as_bytes());
+            assert_eq!(frame.timestamp_ns, i as u64 * 1000);
         }
     }
 
@@ -1087,8 +1087,8 @@ mod tests {
         let tail = reader.read_tail(100).unwrap();
         assert_eq!(tail.len(), 3);
         // Verify order is preserved
-        for i in 0..3 {
-            assert_eq!(tail[i].payload, format!("f{}", i).as_bytes());
+        for (i, frame) in tail.iter().enumerate() {
+            assert_eq!(frame.payload, format!("f{}", i).as_bytes());
         }
     }
 

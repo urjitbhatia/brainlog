@@ -20,7 +20,7 @@ Install the latest release binary (macOS and Linux) — no repo checkout, no Rus
 curl -fsSL https://raw.githubusercontent.com/urjitbhatia/brainlog/master/install.sh | sh
 ```
 
-This downloads the prebuilt binary for your platform, verifies its checksum, and installs it to `~/.local/bin`. Set `BRAINLOG_INSTALL_DIR` to install elsewhere, or `BRAINLOG_VERSION` to pin a specific version.
+This downloads the prebuilt binary for your platform (Apple Silicon & Intel macOS, x86_64 & aarch64 Linux), verifies its checksum, and installs it to `~/.local/bin`. Linux builds are statically linked (musl), so they run on any distro including Alpine. Set `BRAINLOG_INSTALL_DIR` to install elsewhere, or `BRAINLOG_VERSION` to pin a specific version.
 
 ### From source
 

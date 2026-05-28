@@ -60,13 +60,16 @@ case "$os" in
 	Darwin)
 		case "$arch" in
 			arm64 | aarch64) target="aarch64-apple-darwin" ;;
+			x86_64 | amd64) target="x86_64-apple-darwin" ;;
 			*) err "no prebuilt binary for macOS $arch. Build from source: cargo install --git https://github.com/$REPO" ;;
 		esac
 		;;
 	Linux)
+		# Prefer the statically-linked musl binaries: they run on any distro
+		# (including Alpine and older glibc) with no shared-library dependencies.
 		case "$arch" in
-			x86_64 | amd64) target="x86_64-unknown-linux-gnu" ;;
-			aarch64 | arm64) target="aarch64-unknown-linux-gnu" ;;
+			x86_64 | amd64) target="x86_64-unknown-linux-musl" ;;
+			aarch64 | arm64) target="aarch64-unknown-linux-musl" ;;
 			*) err "no prebuilt binary for Linux $arch. Build from source: cargo install --git https://github.com/$REPO" ;;
 		esac
 		;;

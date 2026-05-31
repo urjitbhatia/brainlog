@@ -1,0 +1,10 @@
+# cross-rs configuration.
+#
+# .cargo/config.toml sets `rustc-wrapper = "sccache"` for local development,
+# but sccache is not installed inside the cross-rs build containers. The
+# release workflow sets `RUSTC_WRAPPER=""` to disable the wrapper on the host;
+# without passthrough that override never reaches the container, so cargo tries
+# to exec `sccache` and fails with "could not execute process `sccache`".
+# Forwarding the (empty) host value makes the override take effect in-container.
+[build.env]
+passthrough = ["RUSTC_WRAPPER", "CARGO_INCREMENTAL"]

@@ -14,15 +14,29 @@ Brainlog wraps any command via PTY, recording every byte of I/O while the proces
 
 ## Install
 
+Install the latest release binary (macOS and Linux) — no repo checkout, no Rust toolchain required:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/urjitbhatia/brainlog/master/install.sh | sh
+```
+
+This downloads the prebuilt binary for your platform (Apple Silicon & Intel macOS, x86_64 & aarch64 Linux), verifies its checksum, and installs it to `~/.local/bin`. Linux builds are statically linked (musl), so they run on any distro including Alpine. Set `BRAINLOG_INSTALL_DIR` to install elsewhere, or `BRAINLOG_VERSION` to pin a specific version.
+
+### From source
+
+With a Rust toolchain installed, build straight from the repo:
+
+```bash
+cargo install --git https://github.com/urjitbhatia/brainlog
+```
+
+Or from a local checkout:
+
 ```bash
 cargo install --path .
 ```
 
-Or with `cargo-binstall` (if a release binary is available):
-
-```bash
-cargo binstall brainlog
-```
+> Note: brainlog is Unix-only — it relies on a pseudo-terminal, so macOS and Linux are supported but Windows is not.
 
 ## Quick start
 

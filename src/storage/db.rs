@@ -631,7 +631,7 @@ impl Database {
         }
 
         // Sort by most recent run first (groups with no runs go last)
-        result.sort_by(|a, b| b.latest_run_at.cmp(&a.latest_run_at));
+        result.sort_by_key(|g| std::cmp::Reverse(g.latest_run_at));
 
         Ok(result)
     }
@@ -789,6 +789,51 @@ impl serde::Serialize for ServiceMetadataMatch {
         state.serialize_field("status", &self.status)?;
         state.end()
     }
+}
+
+fn parse_datetime(s: &str) -> Result<chrono::DateTime<chrono::Utc>, rusqlite::Error> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
+}
+
+fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite::Error> {
+    let command_line_json: String = row.get(4)?;
+    let created_at_str: String = row.get(6)?;
+    let updated_at_str: String = row.get(7)?;
+    let enrichment_str: String = row.get(8)?;
+
+    Ok(Service {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        executable: row.get(3)?,
+        command_line: serde_json::from_str(&command_line_json).unwrap_or_default(),
+        working_dir: row.get(5)?,
+        created_at: parse_datetime(&created_at_str)?,
+        updated_at: parse_datetime(&updated_at_str)?,
+        enrichment_status: EnrichmentStatus::parse(&enrichment_str),
+    })
+}
+
+fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> {
+    let started_at_str: String = row.get(3)?;
+    let ended_at_str: Option<String> = row.get(4)?;
+    let status_str: String = row.get(7)?;
+
+    Ok(Run {
+        id: row.get(0)?,
+        service_id: row.get(1)?,
+        pid: row.get::<_, Option<i64>>(2)?.map(|p| p as u32),
+        started_at: parse_datetime(&started_at_str)?,
+        ended_at: ended_at_str.map(|s| parse_datetime(&s)).transpose()?,
+        exit_code: row.get(5)?,
+        log_dir: row.get(6)?,
+        status: RunStatus::parse(&status_str),
+        wrapper_pid: row.get::<_, Option<i64>>(8)?.map(|p| p as u32),
+    })
 }
 
 #[cfg(test)]
@@ -1804,49 +1849,4 @@ mod tests {
         let candidates = db.find_purgeable_services(&cutoff, false).unwrap();
         assert!(candidates.is_empty());
     }
-}
-
-fn parse_datetime(s: &str) -> Result<chrono::DateTime<chrono::Utc>, rusqlite::Error> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
-}
-
-fn row_to_service(row: &rusqlite::Row<'_>) -> Result<Service, rusqlite::Error> {
-    let command_line_json: String = row.get(4)?;
-    let created_at_str: String = row.get(6)?;
-    let updated_at_str: String = row.get(7)?;
-    let enrichment_str: String = row.get(8)?;
-
-    Ok(Service {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        description: row.get(2)?,
-        executable: row.get(3)?,
-        command_line: serde_json::from_str(&command_line_json).unwrap_or_default(),
-        working_dir: row.get(5)?,
-        created_at: parse_datetime(&created_at_str)?,
-        updated_at: parse_datetime(&updated_at_str)?,
-        enrichment_status: EnrichmentStatus::parse(&enrichment_str),
-    })
-}
-
-fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run, rusqlite::Error> {
-    let started_at_str: String = row.get(3)?;
-    let ended_at_str: Option<String> = row.get(4)?;
-    let status_str: String = row.get(7)?;
-
-    Ok(Run {
-        id: row.get(0)?,
-        service_id: row.get(1)?,
-        pid: row.get::<_, Option<i64>>(2)?.map(|p| p as u32),
-        started_at: parse_datetime(&started_at_str)?,
-        ended_at: ended_at_str.map(|s| parse_datetime(&s)).transpose()?,
-        exit_code: row.get(5)?,
-        log_dir: row.get(6)?,
-        status: RunStatus::parse(&status_str),
-        wrapper_pid: row.get::<_, Option<i64>>(8)?.map(|p| p as u32),
-    })
 }

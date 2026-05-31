@@ -1324,34 +1324,34 @@
         <div class="section-header fade-in">
           <span class="section-label">Install</span>
           <h2 class="section-heading" id="install-heading">Get started in seconds</h2>
-          <p class="section-sub">Install via Cargo or use cargo-binstall for a prebuilt binary.</p>
+          <p class="section-sub">Grab the prebuilt binary, or build from source with Cargo.</p>
         </div>
 
         <div class="install-grid fade-in">
           <div class="install-option">
-            <div class="install-option-label">From crates.io</div>
+            <div class="install-option-label">Prebuilt binary</div>
             <div class="install-cmd">
-              <code>cargo install brainlog</code>
+              <code>curl -fsSL https://raw.githubusercontent.com/urjitbhatia/brainlog/master/install.sh | sh</code>
               <button
                 class="copy-btn"
-                aria-label="Copy cargo install brainlog to clipboard"
-                data-copy="cargo install brainlog"
+                aria-label="Copy install script command to clipboard"
+                data-copy="curl -fsSL https://raw.githubusercontent.com/urjitbhatia/brainlog/master/install.sh | sh"
               >copy</button>
             </div>
-            <p class="install-note">Compiles from source — requires Rust toolchain.</p>
+            <p class="install-note">macOS &amp; Linux, no Rust toolchain required. Linux builds are statically linked (musl).</p>
           </div>
 
           <div class="install-option">
-            <div class="install-option-label">Binary install</div>
+            <div class="install-option-label">From source</div>
             <div class="install-cmd">
-              <code>cargo binstall brainlog</code>
+              <code>cargo install --git https://github.com/urjitbhatia/brainlog</code>
               <button
                 class="copy-btn"
-                aria-label="Copy cargo binstall brainlog to clipboard"
-                data-copy="cargo binstall brainlog"
+                aria-label="Copy cargo install command to clipboard"
+                data-copy="cargo install --git https://github.com/urjitbhatia/brainlog"
               >copy</button>
             </div>
-            <p class="install-note">Downloads prebuilt binary. Requires <a href="https://github.com/cargo-bins/cargo-binstall" target="_blank" rel="noopener noreferrer" style="color: var(--teal-light);">cargo-binstall</a>.</p>
+            <p class="install-note">Compiles from source — requires a Rust toolchain.</p>
           </div>
         </div>
       </div>

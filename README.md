@@ -8,6 +8,10 @@
 Transparent process wrapper that captures stdout, stderr, and stdin — with an MCP server so LLM agents can read your terminal output.
 </p>
 
+<p align="center">
+  <a href="https://urjitbhatia.github.io/brainlog/"><strong>Website</strong></a>
+</p>
+
 ---
 
 Brainlog wraps any command via PTY, recording every byte of I/O while the process runs exactly as it would without brainlog. Colors, interactive prompts, TUI apps — everything works transparently. An MCP server gives LLM agents direct access to discover, read, search, and watch process output without the user copy-pasting anything.
@@ -163,6 +167,20 @@ Add to your `~/.claude/settings.json`:
 ```
 
 Frame format: `[timestamp_ns:u64 LE][stream_type:u8][length:u32 LE][payload]`
+
+## Releasing
+
+Releases are built and published automatically by the [`Release` workflow](.github/workflows/release.yml). To cut a release:
+
+1. Bump `version` in `Cargo.toml` (and run a build so `Cargo.lock` updates), then commit to `master`.
+2. Tag the commit with a matching `v` prefix and push it:
+
+   ```bash
+   git tag v0.4.1
+   git push origin v0.4.1
+   ```
+
+The workflow builds binaries for macOS (Apple Silicon + Intel) and Linux (x86_64 + aarch64, statically linked via musl), packages each as a `.tar.gz` with a SHA-256 checksum, and attaches them to a [GitHub Release](https://github.com/urjitbhatia/brainlog/releases). The tag version must match `Cargo.toml` or the workflow fails. Once a Release is published, the [install script](install.sh) can find and download those binaries. You can also trigger a build manually from the Actions tab via **workflow_dispatch**.
 
 ## License
 

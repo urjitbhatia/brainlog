@@ -631,7 +631,7 @@ impl Database {
         }
 
         // Sort by most recent run first (groups with no runs go last)
-        result.sort_by(|a, b| b.latest_run_at.cmp(&a.latest_run_at));
+        result.sort_by_key(|g| std::cmp::Reverse(g.latest_run_at));
 
         Ok(result)
     }

@@ -36,3 +36,8 @@ owo-colors = "4"
 
 [dev-dependencies]
 tempfile = "3"
+
+[profile.release]
+strip = true        # strip symbols — large size reduction for shipped binaries
+lto = "thin"        # link-time optimization: smaller and faster
+codegen-units = 1   # better optimization at the cost of build parallelism

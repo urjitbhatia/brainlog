@@ -1,3 +1,6 @@
+# sccache is intentionally NOT wired up here. Forcing rustc-wrapper on every
+# contributor and CI container (including cross-rs build images, which lack
+# sccache) is what broke the release builds. To use sccache locally, opt in
+# via your own environment: export RUSTC_WRAPPER=sccache
 [build]
-rustc-wrapper = "sccache"
 incremental = false

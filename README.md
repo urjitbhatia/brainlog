@@ -65,6 +65,13 @@ Auto-restart on exit:
 brainlog run --restart -- node server.js
 ```
 
+Launch under the daemon (returns immediately, service runs in the background):
+
+```bash
+brainlog daemon start            # one-time, per machine
+brainlog -D -n my-api node server.js
+```
+
 Resume a previous service (new run, same name):
 
 ```bash
@@ -99,6 +106,29 @@ brainlog kill my-api -f           # send SIGKILL (force)
 brainlog kill my-api -s HUP      # send specific signal
 brainlog restart my-api           # restart via wrapper (SIGUSR1)
 ```
+
+### Daemon mode
+
+Run services in the background under a single supervisor, instead of holding
+a terminal foreground per process:
+
+```bash
+brainlog daemon start             # start the singleton daemon (one per user)
+brainlog daemon status            # show running daemon + supervised services
+brainlog daemon stop              # stop the daemon (sends SIGTERM to its children)
+
+brainlog -D -n api node server.js # launch under the daemon, returns immediately
+brainlog run --daemon -- ./run.sh # same, via the explicit subcommand
+```
+
+Each `-D` invocation hands the command to the daemon, which spawns a detached
+brainlog wrapper for it. Logs, names, tags, and `--restart` all behave
+exactly as they do in foreground mode — `brainlog logs <name>`, `brainlog
+kill <name>`, etc. work unchanged. Closing the terminal does not stop the
+service; only `brainlog kill <name>` or `brainlog daemon stop` does.
+
+The daemon is a per-user singleton enforced by `fcntl` locking on
+`~/.brainlog/daemon.pid`; a second `daemon start` is a no-op.
 
 ### Housekeeping
 

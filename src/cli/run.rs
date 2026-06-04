@@ -26,6 +26,11 @@ use crate::storage::models::*;
 use crate::storage::{Database, LogWriter};
 
 pub async fn handle_run(args: RunArgs) -> Result<i32> {
+    // --daemon: dispatch to the daemon instead of running in this process.
+    if args.daemon {
+        return handle_run_via_daemon(args).await;
+    }
+
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
 
@@ -494,6 +499,54 @@ pub async fn handle_run(args: RunArgs) -> Result<i32> {
     print_resume_hint(&svc_name, &args.command, has_user_name);
 
     Ok(last_exit_code)
+}
+
+/// Forward a `brainlog run --daemon` invocation to the running daemon.
+/// Returns 0 on success after the daemon acknowledges the spawn.
+async fn handle_run_via_daemon(args: RunArgs) -> Result<i32> {
+    use crate::cli::daemon::{resolve_daemon_paths, spawn_via_daemon};
+    use crate::daemon::protocol::{Response, ServiceSpec};
+
+    validate_tags(&args.tag)?;
+    let cwd = std::env::current_dir()?.to_string_lossy().into_owned();
+    let spec = ServiceSpec {
+        command: args.command.clone(),
+        cwd,
+        name: args.name.clone(),
+        resume: args.resume.clone(),
+        tags: args.tag.clone(),
+        desc: args.desc.clone(),
+        restart: args.restart,
+    };
+    let paths = resolve_daemon_paths()?;
+    let resp = spawn_via_daemon(&paths, spec).await?;
+    let tty = std::io::stdout().is_terminal();
+    match resp {
+        Response::Spawned { name, .. } => {
+            let label = name.as_deref().unwrap_or("(unnamed)");
+            if tty {
+                println!(
+                    "{} brainlog daemon spawned `{}` as `{}`. Logs: brainlog logs {}",
+                    "ok".green(),
+                    args.command.join(" ").bold(),
+                    label.bold(),
+                    label,
+                );
+            } else {
+                println!(
+                    "brainlog daemon spawned `{}` as `{}`. Logs: brainlog logs {}",
+                    args.command.join(" "),
+                    label,
+                    label,
+                );
+            }
+            Ok(0)
+        }
+        Response::Error { message } => {
+            anyhow::bail!("daemon refused spawn: {message}")
+        }
+        other => anyhow::bail!("unexpected response from daemon: {other:?}"),
+    }
 }
 
 fn create_service(

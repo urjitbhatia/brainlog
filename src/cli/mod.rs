@@ -1,3 +1,4 @@
+pub mod daemon;
 pub mod kill;
 pub mod list;
 pub mod logs;
@@ -10,6 +11,7 @@ pub mod search;
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
+use crate::cli::daemon::DaemonArgs;
 use crate::storage::models::StreamFilter;
 
 #[derive(Parser, Debug)]
@@ -42,6 +44,8 @@ pub enum Commands {
     Purge(PurgeArgs),
     /// Restart a running monitored process
     Restart(RestartArgs),
+    /// Manage the brainlog daemon (start/stop/status)
+    Daemon(DaemonArgs),
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -66,6 +70,12 @@ pub struct RunArgs {
     /// Auto-restart the child on any exit (except SIGINT/SIGTERM)
     #[arg(long)]
     pub restart: bool,
+
+    /// Run under the brainlog daemon instead of in the foreground.
+    /// The command is sent to the daemon, which spawns a detached wrapper;
+    /// this brainlog invocation returns immediately.
+    #[arg(short = 'D', long)]
+    pub daemon: bool,
 
     /// Command and arguments to run
     #[arg(trailing_var_arg = true, required = true)]
@@ -273,6 +283,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
     let mut tags: Vec<String> = Vec::new();
     let mut desc: Option<String> = None;
     let mut restart = false;
+    let mut daemon = false;
     let mut command_start = 1;
 
     let mut i = 1;
@@ -320,6 +331,11 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
                 i += 1;
                 command_start = i;
             }
+            "--daemon" | "-D" => {
+                daemon = true;
+                i += 1;
+                command_start = i;
+            }
             _ => break, // First unrecognized arg starts the command
         }
     }
@@ -341,6 +357,7 @@ pub fn parse_direct_mode(args: &[String]) -> Option<RunArgs> {
         tag: tags,
         desc,
         restart,
+        daemon,
         command,
     })
 }

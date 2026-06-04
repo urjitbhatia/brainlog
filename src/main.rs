@@ -101,6 +101,13 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Commands::Daemon(args)) => match cli::daemon::handle_daemon(args).await {
+            Ok(code) => ExitCode::from(exit_code_to_u8(code)),
+            Err(e) => {
+                eprintln!("brainlog: {:#}", e);
+                ExitCode::FAILURE
+            }
+        },
         None => {
             // No command provided, print help
             use clap::CommandFactory;

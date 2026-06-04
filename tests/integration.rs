@@ -727,3 +727,150 @@ fn mcp_search_logs_tool() {
     drop(stdin);
     let _ = child.wait();
 }
+
+// ─── Daemon mode ─────────────────────────────────────────────────────
+
+impl BrainlogEnv {
+    /// Spawn a daemon for this isolated environment and return immediately.
+    /// Returns the daemon's pid file path so the caller can wait/cleanup.
+    fn start_daemon(&self) -> std::path::PathBuf {
+        let res = self.run(&["daemon", "start"]);
+        assert_eq!(res.exit_code, 0, "daemon start failed: {res:?}");
+        self.home.path().join(".brainlog/daemon.pid")
+    }
+
+    fn stop_daemon(&self) {
+        let _ = self.run(&["daemon", "stop"]);
+    }
+
+    /// Wait up to ~3s for a predicate over the DB connection to return true.
+    fn wait_for_db<F: Fn(&rusqlite::Connection) -> bool>(&self, pred: F) -> bool {
+        for _ in 0..150 {
+            if self.db_path().exists() {
+                let conn = self.open_db();
+                if pred(&conn) {
+                    return true;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+}
+
+#[test]
+fn daemon_status_when_not_running() {
+    let env = BrainlogEnv::new();
+    let res = env.run(&["daemon", "status"]);
+    assert_eq!(res.exit_code, 0);
+    assert!(
+        res.stdout.contains("stopped"),
+        "status should say stopped: {res:?}"
+    );
+}
+
+#[test]
+fn daemon_start_then_status_reports_running() {
+    let env = BrainlogEnv::new();
+    let pid_file = env.start_daemon();
+    assert!(pid_file.exists(), "pid file should exist after start");
+
+    let res = env.run(&["daemon", "status"]);
+    assert_eq!(res.exit_code, 0);
+    assert!(
+        res.stdout.contains("running"),
+        "status should say running: {res:?}"
+    );
+
+    env.stop_daemon();
+    // Pid file should be cleaned up by the daemon's Drop impl.
+    for _ in 0..50 {
+        if !pid_file.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(!pid_file.exists(), "pid file should be removed after stop");
+}
+
+#[test]
+fn daemon_double_start_is_noop() {
+    let env = BrainlogEnv::new();
+    let _pid_file = env.start_daemon();
+    // Second start should report "already running" and exit 0 without
+    // bringing up a second daemon (the pid file lock prevents that anyway).
+    let res = env.run(&["daemon", "start"]);
+    assert_eq!(res.exit_code, 0);
+    assert!(
+        res.stderr.contains("already running") || res.stdout.contains("already running"),
+        "second start should say already running: {res:?}"
+    );
+    env.stop_daemon();
+}
+
+#[test]
+fn run_daemon_flag_without_daemon_errors() {
+    let env = BrainlogEnv::new();
+    let res = env.run(&["-D", "echo", "no-daemon"]);
+    assert_ne!(res.exit_code, 0, "should fail without daemon: {res:?}");
+    assert!(
+        res.stderr.contains("daemon is not running"),
+        "should explain why: {res:?}"
+    );
+}
+
+#[test]
+fn run_daemon_flag_dispatches_to_daemon() {
+    let env = BrainlogEnv::new();
+    env.start_daemon();
+
+    let res = env.run(&[
+        "run",
+        "--daemon",
+        "--name",
+        "daemon-svc",
+        "--",
+        "echo",
+        "from-daemon",
+    ]);
+    assert_eq!(res.exit_code, 0, "spawn under daemon failed: {res:?}");
+    assert!(
+        res.stdout.contains("spawned"),
+        "should print spawned: {res:?}"
+    );
+
+    // The daemon's wrapper writes service+run records into the shared DB.
+    let found = env.wait_for_db(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM services WHERE name = 'daemon-svc'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+            > 0
+    });
+    assert!(found, "service should appear in DB");
+
+    env.stop_daemon();
+}
+
+#[test]
+fn daemon_status_lists_supervised_services() {
+    let env = BrainlogEnv::new();
+    env.start_daemon();
+
+    // Run a long-ish command so it's still alive when we check status.
+    env.run(&["-D", "--name", "long-svc", "sh", "-c", "sleep 2; echo done"]);
+
+    // Give the daemon a moment to register the child.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let res = env.run(&["daemon", "status"]);
+    assert_eq!(res.exit_code, 0);
+    assert!(
+        res.stdout.contains("long-svc"),
+        "status should list the service: {res:?}"
+    );
+
+    env.stop_daemon();
+}

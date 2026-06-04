@@ -1422,6 +1422,23 @@
               across sessions. Long-running processes made easy.
             </p>
           </article>
+
+          <article class="feature-card fade-in" aria-labelledby="feat5-title">
+            <div class="feature-icon">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="2" y="3" width="16" height="6" rx="1"/>
+                <rect x="2" y="11" width="16" height="6" rx="1"/>
+                <circle cx="5" cy="6" r="0.5" fill="currentColor"/>
+                <circle cx="5" cy="14" r="0.5" fill="currentColor"/>
+              </svg>
+            </div>
+            <h3 class="feature-title" id="feat5-title">Daemon mode</h3>
+            <p class="feature-desc">
+              Hand a command to <code style="font-family:var(--font-mono);color:var(--teal-light);font-size:0.8em">brainlog -D</code> and get your shell back
+              instantly. A singleton daemon supervises detached wrappers, so
+              services outlive your terminal.
+            </p>
+          </article>
         </div>
       </div>
     </section>
@@ -1794,6 +1811,26 @@
               <div>&nbsp;</div>
               <div><span class="comment"># Preview what would be purged</span></div>
               <div><span class="hl-amber">brainlog</span> purge --before 1h --name tmp --dry-run</div>
+            </div>
+          </div>
+
+          <div class="cli-card fade-in">
+            <div class="cli-card-header">
+              <div class="dot amber"></div>
+              <h3>Daemon mode</h3>
+            </div>
+            <div class="cli-card-body">
+              <div><span class="comment"># Start the singleton daemon (one per user)</span></div>
+              <div><span class="hl-amber">brainlog</span> daemon start</div>
+              <div>&nbsp;</div>
+              <div><span class="comment"># Launch a service in the background</span></div>
+              <div><span class="hl-amber">brainlog</span> -D -n api node server.js</div>
+              <div>&nbsp;</div>
+              <div><span class="comment"># Inspect supervised services</span></div>
+              <div><span class="hl-amber">brainlog</span> daemon status</div>
+              <div>&nbsp;</div>
+              <div><span class="comment"># Stop the daemon (also stops its children)</span></div>
+              <div><span class="hl-amber">brainlog</span> daemon stop</div>
             </div>
           </div>
         </div>

@@ -43,7 +43,9 @@ impl PidFile {
         // Try to acquire an exclusive non-blocking advisory lock.
         let fd = file.as_raw_fd();
         let mut flock: libc::flock = unsafe { std::mem::zeroed() };
-        flock.l_type = libc::F_WRLCK;
+        // libc::F_WRLCK is `c_short` on macOS, `c_int` on glibc/musl Linux;
+        // the cast is portable because `l_type` itself is always `c_short`.
+        flock.l_type = libc::F_WRLCK as libc::c_short;
         flock.l_whence = libc::SEEK_SET as i16;
         flock.l_start = 0;
         flock.l_len = 0;

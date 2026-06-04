@@ -89,44 +89,8 @@ async fn handle_start(paths: DaemonPaths, args: StartArgs) -> Result<i32> {
         return handle_serve(paths).await;
     }
 
-    // Detach: re-exec ourselves with `daemon serve`. The child runs in its own
-    // session, with /dev/null streams, so closing the terminal won't kill it.
-    let bin = std::env::current_exe().context("resolving brainlog binary path")?;
-    let mut cmd = std::process::Command::new(&bin);
-    cmd.args(["daemon", "serve"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        cmd.pre_exec(|| {
-            let rc = libc::setsid();
-            if rc == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let child = cmd.spawn().context("spawning detached daemon process")?;
-    let child_pid = child.id();
-
-    // Wait for the daemon to bind its socket so subsequent commands work.
+    let child_pid = spawn_detached_daemon(&paths).await?;
     let socket = paths.socket_path();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if socket.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    if !socket.exists() {
-        anyhow::bail!(
-            "daemon did not start within 5s (no socket at {})",
-            socket.display()
-        );
-    }
-
     let tty = std::io::stdout().is_terminal();
     if tty {
         println!(
@@ -142,6 +106,45 @@ async fn handle_start(paths: DaemonPaths, args: StartArgs) -> Result<i32> {
         );
     }
     Ok(0)
+}
+
+/// Fork a detached daemon serve process and block until its socket is bound.
+/// Returns the child PID. The caller should not have a daemon already running —
+/// guard with `read_locked_pid` first.
+async fn spawn_detached_daemon(paths: &DaemonPaths) -> Result<u32> {
+    let bin = std::env::current_exe().context("resolving brainlog binary path")?;
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(["daemon", "serve"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            // setsid: detach from the parent's controlling terminal and pgrp,
+            // so closing the terminal won't deliver SIGHUP to the daemon.
+            let rc = libc::setsid();
+            if rc == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().context("spawning detached daemon process")?;
+    let child_pid = child.id();
+
+    let socket = paths.socket_path();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if socket.exists() {
+            return Ok(child_pid);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    anyhow::bail!(
+        "daemon did not start within 5s (no socket at {})",
+        socket.display()
+    );
 }
 
 async fn handle_stop(paths: DaemonPaths) -> Result<i32> {
@@ -272,14 +275,26 @@ async fn handle_serve(paths: DaemonPaths) -> Result<i32> {
     Ok(0)
 }
 
-/// Send a SpawnService request to a running daemon, returning the response.
-/// Used by `brainlog run --daemon`.
+/// Send a `SpawnService` request to the daemon, autostarting it if needed.
+/// Used by `brainlog run --daemon` so the user never has to bootstrap state
+/// before launching a service.
 pub async fn spawn_via_daemon(
     paths: &DaemonPaths,
     spec: crate::daemon::protocol::ServiceSpec,
 ) -> Result<Response> {
     if read_locked_pid(paths.pid_file())?.is_none() {
-        anyhow::bail!("brainlog daemon is not running; start it with `brainlog daemon start`");
+        // No daemon running — bring one up transparently. Mirrors the work
+        // `brainlog daemon start` does, minus the chatty success print.
+        let tty = std::io::stderr().is_terminal();
+        if tty {
+            eprintln!(
+                "{} brainlog daemon not running, starting it...",
+                "note".yellow().bold()
+            );
+        } else {
+            eprintln!("brainlog daemon not running, starting it...");
+        }
+        spawn_detached_daemon(paths).await?;
     }
     let socket = paths.socket_path();
     round_trip(&socket, Request::SpawnService { spec }).await

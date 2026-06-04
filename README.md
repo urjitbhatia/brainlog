@@ -68,8 +68,7 @@ brainlog run --restart -- node server.js
 Launch under the daemon (returns immediately, service runs in the background):
 
 ```bash
-brainlog daemon start            # one-time, per machine
-brainlog -D -n my-api node server.js
+brainlog -D -n my-api node server.js   # daemon autostarts if not already running
 ```
 
 Resume a previous service (new run, same name):
@@ -113,19 +112,20 @@ Run services in the background under a single supervisor, instead of holding
 a terminal foreground per process:
 
 ```bash
-brainlog daemon start             # start the singleton daemon (one per user)
-brainlog daemon status            # show running daemon + supervised services
-brainlog daemon stop              # stop the daemon (sends SIGTERM to its children)
-
 brainlog -D -n api node server.js # launch under the daemon, returns immediately
 brainlog run --daemon -- ./run.sh # same, via the explicit subcommand
+
+brainlog daemon status            # show running daemon + supervised services
+brainlog daemon stop              # stop the daemon (sends SIGTERM to its children)
+brainlog daemon start             # explicit start (autostart usually makes this unnecessary)
 ```
 
-Each `-D` invocation hands the command to the daemon, which spawns a detached
-brainlog wrapper for it. Logs, names, tags, and `--restart` all behave
-exactly as they do in foreground mode — `brainlog logs <name>`, `brainlog
-kill <name>`, etc. work unchanged. Closing the terminal does not stop the
-service; only `brainlog kill <name>` or `brainlog daemon stop` does.
+The daemon autostarts on the first `-D` invocation, so the common case is
+zero-setup: just add `-D` to any `brainlog run` command. Logs, names, tags,
+and `--restart` all behave exactly as they do in foreground mode —
+`brainlog logs <name>`, `brainlog kill <name>`, etc. work unchanged.
+Closing the terminal does not stop the service; only `brainlog kill <name>`
+or `brainlog daemon stop` does.
 
 The daemon is a per-user singleton enforced by `fcntl` locking on
 `~/.brainlog/daemon.pid`; a second `daemon start` is a no-op.

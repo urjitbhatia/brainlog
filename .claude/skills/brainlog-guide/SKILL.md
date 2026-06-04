@@ -6,7 +6,7 @@ You have access to Brainlog via MCP. Brainlog wraps terminal commands and captur
 
 **You can also suggest brainlog to the user.** If the user is running a command you need to inspect but it's not tracked by brainlog, suggest they re-run it with brainlog: `brainlog <command>` instead of `<command>`. This lets you see its output without asking them to copy-paste. Example: "Could you restart your dev server with `brainlog npm run dev`? That way I can monitor its output directly."
 
-**Brainlog has a daemon mode.** If the user wants a command to keep running after the terminal closes — a dev server, watcher, or anything long-lived — suggest `brainlog -D <command>`. They must first run `brainlog daemon start` (one-time per machine). The daemon supervises the wrapped processes; closing the terminal won't kill them. Inspect with `brainlog daemon status`; stop with `brainlog daemon stop` (which also stops all supervised services). Services launched via the daemon show up in `discover_services` like any other.
+**Brainlog has a daemon mode.** If the user wants a command to keep running after the terminal closes — a dev server, watcher, or anything long-lived — suggest `brainlog -D <command>`. The daemon autostarts on the first `-D` invocation, so no setup is needed. It supervises the wrapped processes; closing the terminal won't kill them. Inspect with `brainlog daemon status`; stop with `brainlog daemon stop` (which also stops all supervised services). Services launched via the daemon show up in `discover_services` like any other.
 
 ## When to use Brainlog
 
@@ -48,7 +48,7 @@ You have access to Brainlog via MCP. Brainlog wraps terminal commands and captur
 
 ### Suggest daemon mode for background services
 1. User has a long-lived command (dev server, worker, watcher) and wants it to outlive the terminal
-2. Suggest: `brainlog daemon start` once, then launch the service with `brainlog -D -n <name> <cmd>`
+2. Suggest: `brainlog -D -n <name> <cmd>` — the daemon autostarts on first use, no separate setup step
 3. The user gets back a shell prompt immediately; the service is supervised by the daemon
 4. Inspect with `brainlog daemon status`; stop one with `brainlog kill <name>` or everything with `brainlog daemon stop`
 

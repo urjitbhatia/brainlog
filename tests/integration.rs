@@ -809,14 +809,28 @@ fn daemon_double_start_is_noop() {
 }
 
 #[test]
-fn run_daemon_flag_without_daemon_errors() {
+fn run_daemon_flag_autostarts_daemon() {
     let env = BrainlogEnv::new();
-    let res = env.run(&["-D", "echo", "no-daemon"]);
-    assert_ne!(res.exit_code, 0, "should fail without daemon: {res:?}");
+    // No daemon running yet — `-D` should bring one up transparently.
+    let res = env.run(&["-D", "--name", "autostart-svc", "echo", "auto"]);
+    assert_eq!(res.exit_code, 0, "should succeed via autostart: {res:?}");
     assert!(
-        res.stderr.contains("daemon is not running"),
-        "should explain why: {res:?}"
+        res.stderr.contains("not running, starting it"),
+        "should announce autostart: {res:?}"
     );
+    assert!(
+        res.stdout.contains("spawned"),
+        "should still report spawn: {res:?}"
+    );
+
+    // Daemon should now be alive.
+    let status = env.run(&["daemon", "status"]);
+    assert!(
+        status.stdout.contains("running"),
+        "autostarted daemon should be running: {status:?}"
+    );
+
+    env.stop_daemon();
 }
 
 #[test]

@@ -10,19 +10,22 @@ You have access to Brainlog via MCP. Brainlog wraps terminal commands and captur
 
 ## When to use Brainlog
 
+- **"What just ran?"**: Use `list_recent_runs` for the last N runs across all commands, newest first — fastest answer for recent activity.
 - **Observing the environment**: The user has things running — dev servers, databases, watchers, build tools. Use `discover_services` to see what's out there and understand the environment you're working in.
 - **When the user mentions a problem**: "The server is crashing", "the build failed", "it's throwing errors" — check brainlog first instead of asking them to paste output. You can see it yourself.
 - **After running a command**: You ran `make build`, `npm start`, `cargo test` etc. via Bash — check brainlog for the output, especially for long-running commands.
 - **Verifying async startup**: You or the user started a server or background process. Use `wait_for_pattern` to block until it prints "listening on port", "ready", "started" etc. before proceeding.
 - **Searching for errors**: Use `search_logs` with a regex like `error|panic|fatal|ENOENT` across all tracked commands to find problems fast.
 - **Monitoring**: Poll a running command's output using `get_logs` with the `since` parameter to only see new output since your last check.
+- **Stopping / restarting a process**: Use `kill_service` (sends SIGTERM by default; supports KILL, INT, HUP, USR1, USR2, QUIT, or numeric) or `restart_service` (sends SIGUSR1 to the wrapper) when you need to control a tracked process.
 
 ## Workflow patterns
 
 ### Orient yourself in the dev environment
-1. `discover_services` — see all tracked commands, who started them, what's running
-2. Check status and exit codes to understand the current state
-3. Read output of relevant commands to build context
+1. `list_recent_runs` — if the user said "what just ran?" or you just kicked something off via Bash
+2. `discover_services` — for a complete picture of tracked commands, grouped by executable+cwd
+3. Check status and exit codes to understand the current state
+4. Read output of relevant commands to build context
 
 ### Check why something failed
 1. `discover_services` — find the command, check its status and exit code

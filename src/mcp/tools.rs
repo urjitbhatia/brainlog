@@ -570,11 +570,10 @@ pub fn kill_service_resolve(
         );
     }
 
-    let pid = run
-        .pid
-        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no PID recorded", service_name))?;
-
     // For catchable signals, send to wrapper and let it handle the child tree.
+    // This path doesn't need the child PID, so it also recovers "phantom" runs
+    // whose child PID was never recorded (status=Running, pid=None) — e.g. a
+    // short-lived child that lost the async PID-reporting race.
     if sig != Signal::SIGKILL {
         if let Some(wrapper_pid) = run.wrapper_pid {
             if is_process_alive(wrapper_pid) {
@@ -609,6 +608,52 @@ pub fn kill_service_resolve(
             }
         }
     }
+
+    // SIGKILL (or no live wrapper for a catchable signal): we need the child PID
+    // to kill the tree directly.
+    let pid = match run.pid {
+        Some(pid) => pid,
+        None => {
+            // Phantom run: status=Running but no child PID was ever recorded.
+            // Fall back to signaling the wrapper directly rather than refusing —
+            // it's the process we recorded at spawn and is perfectly signalable.
+            if let Some(wrapper_pid) = run.wrapper_pid {
+                if is_process_alive(wrapper_pid) {
+                    let nix_pid = Pid::from_raw(wrapper_pid as i32);
+                    signal::kill(nix_pid, sig).map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to send {} to wrapper PID {}: {}",
+                            sig,
+                            wrapper_pid,
+                            e
+                        )
+                    })?;
+                    return Ok(KillServiceResolved {
+                        service_name: service_name.clone(),
+                        service_id: service.id.clone(),
+                        signal: sig,
+                        early_response: Some(KillServiceResponse {
+                            success: true,
+                            service_name,
+                            service_id: service.id,
+                            signal: format!("{}", sig),
+                            pids: vec![wrapper_pid],
+                            message: format!(
+                                "Sent {} to wrapper PID {} (no child PID recorded)",
+                                sig, wrapper_pid
+                            ),
+                        }),
+                        child_pid: None,
+                        wrapper_pid: None,
+                    });
+                }
+            }
+            anyhow::bail!(
+                "Service '{}' has no PID recorded and no live wrapper",
+                service_name
+            );
+        }
+    };
 
     // Fallback: SIGKILL or no wrapper — async phase will kill child tree directly
     Ok(KillServiceResolved {
@@ -856,6 +901,77 @@ mod tests {
             "run-mcp-001".to_string(),
             dir,
         )
+    }
+
+    // ── kill_service_resolve: phantom runs (Running + pid:None) ───────
+
+    /// Insert a service with a single Running run that has no recorded child PID.
+    fn setup_phantom(db: &Database, wrapper_pid: Option<u32>) {
+        let svc = Service {
+            id: "svc-phantom".to_string(),
+            name: Some("phantom-svc".to_string()),
+            description: None,
+            executable: "tsh".to_string(),
+            command_line: vec!["tsh".to_string()],
+            working_dir: "/tmp".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            enrichment_status: EnrichmentStatus::Skipped,
+        };
+        db.create_service(&svc).unwrap();
+        let run = Run {
+            id: "run-phantom".to_string(),
+            service_id: "svc-phantom".to_string(),
+            pid: None, // child PID never recorded (lost the async reporting race)
+            started_at: Utc::now(),
+            ended_at: None,
+            exit_code: None,
+            log_dir: "/tmp/run-phantom".to_string(),
+            status: RunStatus::Running,
+            wrapper_pid,
+        };
+        db.create_run(&run).unwrap();
+    }
+
+    #[test]
+    fn kill_phantom_falls_back_to_live_wrapper() {
+        let db = Database::open_in_memory().unwrap();
+        // Use our own PID as the (alive) wrapper, and SIGCONT (18) which is a
+        // no-op for a running process — proves a Running+pid:None row is now
+        // killable via the wrapper instead of bailing "no PID recorded".
+        setup_phantom(&db, Some(std::process::id()));
+        let params = KillServiceParams {
+            id: "svc-phantom".to_string(),
+            signal: Some("18".to_string()),
+        };
+
+        let resolved = kill_service_resolve(&db, &params).unwrap();
+        let resp = resolved
+            .early_response
+            .expect("phantom should be resolved via the wrapper PID");
+        assert!(resp.success);
+        assert_eq!(resp.pids, vec![std::process::id()]);
+        assert!(resp.message.contains("wrapper PID"));
+    }
+
+    #[test]
+    fn kill_phantom_without_live_wrapper_reports_clearly() {
+        let db = Database::open_in_memory().unwrap();
+        // Wrapper PID that is not alive: nothing left to signal.
+        setup_phantom(&db, Some(u32::MAX - 1));
+        let params = KillServiceParams {
+            id: "svc-phantom".to_string(),
+            signal: Some("TERM".to_string()),
+        };
+
+        let err = match kill_service_resolve(&db, &params) {
+            Ok(_) => panic!("expected an error for a phantom with no live wrapper"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("no live wrapper"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── discover_services (grouped, default) ──────────────────────────

@@ -66,6 +66,7 @@ fn colour_status(status: &str, is_tty: bool) -> String {
         "completed" => format!("{}", status.dimmed()),
         "failed" => format!("{}", status.red()),
         "killed" => format!("{}", status.yellow()),
+        "dead" => format!("{}", status.red()),
         _ => format!("{}", status.dimmed()),
     }
 }
@@ -74,7 +75,16 @@ fn colour_status(status: &str, is_tty: bool) -> String {
 /// Returns "restarting" if the child isn't running but the wrapper PID is alive.
 fn wrapper_aware_status(run: &crate::storage::models::Run) -> String {
     if run.status == RunStatus::Running {
-        return "running".to_string();
+        // A genuinely running service has a live child and/or wrapper. If neither
+        // is alive this is a stale "phantom" row whose terminal status was never
+        // written (child gone, wrapper killed mid-startup) — don't keep reporting
+        // it as running, or these accumulate as fake services.
+        let child_alive = run.pid.is_some_and(is_process_alive);
+        let wrapper_alive = run.wrapper_pid.is_some_and(is_process_alive);
+        if child_alive || wrapper_alive {
+            return "running".to_string();
+        }
+        return "dead".to_string();
     }
     if let Some(wrapper_pid) = run.wrapper_pid {
         if is_process_alive(wrapper_pid) {
@@ -598,18 +608,20 @@ fn group_wrapper_aware_status(
     db: &Database,
     group: &crate::storage::models::ServiceGroup,
 ) -> String {
-    // If the group already reports running, keep it
-    if let Some(ref status) = group.latest_run_status {
-        if *status == RunStatus::Running {
-            return "running".to_string();
-        }
-    }
-
-    // Check each service's latest run for a live wrapper
+    // Check each service's latest run for a live child/wrapper. A row marked
+    // running but with neither alive is a stale "phantom" — don't let it report
+    // the whole group as running.
+    let mut saw_phantom = false;
     for svc in &group.services {
         if let Ok(Some(run)) = db.get_latest_run(&svc.id) {
             if run.status == RunStatus::Running {
-                return "running".to_string();
+                let child_alive = run.pid.is_some_and(is_process_alive);
+                let wrapper_alive = run.wrapper_pid.is_some_and(is_process_alive);
+                if child_alive || wrapper_alive {
+                    return "running".to_string();
+                }
+                saw_phantom = true;
+                continue;
             }
             if let Some(wrapper_pid) = run.wrapper_pid {
                 if is_process_alive(wrapper_pid) {
@@ -619,9 +631,46 @@ fn group_wrapper_aware_status(
         }
     }
 
+    if saw_phantom {
+        return "dead".to_string();
+    }
+
     group
         .latest_run_status
         .as_ref()
         .map(|s| s.as_str().to_string())
         .unwrap_or_else(|| "no runs".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::models::Run;
+
+    fn running_run(pid: Option<u32>, wrapper_pid: Option<u32>) -> Run {
+        Run {
+            id: "r".to_string(),
+            service_id: "s".to_string(),
+            pid,
+            started_at: Utc::now(),
+            ended_at: None,
+            exit_code: None,
+            log_dir: "/tmp/r".to_string(),
+            status: RunStatus::Running,
+            wrapper_pid,
+        }
+    }
+
+    #[test]
+    fn running_with_live_wrapper_reports_running() {
+        let run = running_run(None, Some(std::process::id()));
+        assert_eq!(wrapper_aware_status(&run), "running");
+    }
+
+    #[test]
+    fn phantom_running_without_live_pids_reports_dead() {
+        // status=Running but neither child nor wrapper is alive — a stale phantom.
+        let run = running_run(Some(u32::MAX - 1), Some(u32::MAX - 2));
+        assert_eq!(wrapper_aware_status(&run), "dead");
+    }
 }

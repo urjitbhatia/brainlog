@@ -44,13 +44,13 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         );
     }
 
-    let pid = run
-        .pid
-        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no PID recorded", service_name))?;
-
     // For catchable signals, send to the wrapper and let it handle the child tree.
     // The wrapper's SIGTERM handler kills the child tree and exits cleanly.
     // For SIGKILL (uncatchable), we must kill the child tree directly.
+    //
+    // This path doesn't need the child PID, so it also recovers "phantom" runs
+    // whose child PID was never recorded (status=Running, pid=None) — e.g. a
+    // short-lived child that lost the async PID-reporting race.
     if signal != Signal::SIGKILL {
         if let Some(wrapper_pid) = run.wrapper_pid {
             if is_process_alive(wrapper_pid) {
@@ -82,6 +82,24 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
             }
         }
     }
+
+    // SIGKILL (or no live wrapper): we need the child PID to kill the tree directly.
+    let pid = match run.pid {
+        Some(pid) => pid,
+        None => {
+            // Phantom run: status=Running but no child PID was ever recorded.
+            // Fall back to signaling the wrapper directly rather than refusing.
+            if let Some(wrapper_pid) = run.wrapper_pid {
+                if is_process_alive(wrapper_pid) {
+                    return kill_wrapper(wrapper_pid, signal, service_name);
+                }
+            }
+            bail!(
+                "Service '{}' has no PID recorded and no live wrapper",
+                service_name
+            );
+        }
+    };
 
     // Fallback: no wrapper, wrapper dead, or SIGKILL — kill child tree directly
     let tree = collect_process_tree(pid).await;

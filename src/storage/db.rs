@@ -11,6 +11,17 @@ pub struct Database {
     conn: Connection,
 }
 
+/// Resolved target for `logs --follow`. See [`Database::resolve_follow_target`].
+#[derive(Debug, Clone)]
+pub enum FollowTarget {
+    /// A specific run was named — follow just this run's log directory and do
+    /// not switch when the service restarts.
+    Run(Run),
+    /// A service was named — follow its current run, and switch to a newer run
+    /// when the service is restarted.
+    Service { service_id: String, current: Run },
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -472,6 +483,94 @@ impl Database {
                 anyhow::bail!(
                     "Service '{}' (matched from prefix '{}') has no runs",
                     matches[0].id,
+                    id
+                );
+            }
+            n if n > 1 => {
+                let ids: Vec<_> = matches.iter().map(|s| s.id.as_str()).collect();
+                anyhow::bail!(
+                    "Ambiguous prefix '{}' matches {} services: {}",
+                    id,
+                    n,
+                    ids.join(", ")
+                );
+            }
+            _ => {}
+        }
+
+        anyhow::bail!(
+            "No service or run found matching '{}'. Use `brainlog list` to see available services.",
+            id
+        );
+    }
+
+    /// Resolve a user-provided identifier into a follow target for `logs -f`.
+    ///
+    /// Unlike [`resolve_log_dir`], which returns a single static log directory,
+    /// this distinguishes between following a *specific run* and following a
+    /// *service*. When a service is followed, the caller can detect restarts
+    /// (which create a brand-new run with a new log directory) and switch to
+    /// the new run's logs so following continues seamlessly.
+    ///
+    /// Resolution order mirrors [`resolve_log_dir`]:
+    /// 1. Exact / prefix run ID -> [`FollowTarget::Run`] (no restart switching)
+    /// 2. Exact service ID / name, or unique service ID prefix ->
+    ///    [`FollowTarget::Service`] (switches to new runs on restart)
+    pub fn resolve_follow_target(&self, id: &str) -> Result<FollowTarget> {
+        // 1. Try as exact run ID
+        if let Some(run) = self.get_run(id)? {
+            return Ok(FollowTarget::Run(run));
+        }
+
+        // 2. Try as run ID prefix
+        let run_matches = self.find_runs_by_id_prefix(id, 2)?;
+        match run_matches.len() {
+            1 => return Ok(FollowTarget::Run(run_matches.into_iter().next().unwrap())),
+            n if n > 1 => {
+                let ids: Vec<_> = run_matches.iter().map(|r| r.id.as_str()).collect();
+                anyhow::bail!(
+                    "Ambiguous prefix '{}' matches {} runs: {}",
+                    id,
+                    n,
+                    ids.join(", ")
+                );
+            }
+            _ => {}
+        }
+
+        // 3. Try as service ID — follow its latest run, switching on restart
+        if let Some(run) = self.get_latest_run(id)? {
+            return Ok(FollowTarget::Service {
+                service_id: id.to_string(),
+                current: run,
+            });
+        }
+
+        // 4. Try as service name
+        if let Some(service) = self.find_service_by_name(id)? {
+            if let Some(run) = self.get_latest_run(&service.id)? {
+                return Ok(FollowTarget::Service {
+                    service_id: service.id,
+                    current: run,
+                });
+            }
+            anyhow::bail!("Service '{}' has no runs", id);
+        }
+
+        // 5. Try prefix match on service ID
+        let matches = self.find_services_by_id_prefix(id, 2)?;
+        match matches.len() {
+            1 => {
+                let service_id = matches.into_iter().next().unwrap().id;
+                if let Some(run) = self.get_latest_run(&service_id)? {
+                    return Ok(FollowTarget::Service {
+                        service_id,
+                        current: run,
+                    });
+                }
+                anyhow::bail!(
+                    "Service '{}' (matched from prefix '{}') has no runs",
+                    service_id,
                     id
                 );
             }
@@ -1421,6 +1520,75 @@ mod tests {
             .any(|f| f.starts_with("command:"));
         assert!(has_name_match, "Should match service name");
         assert!(has_cmd_match, "Should match command line");
+    }
+
+    #[test]
+    fn resolve_follow_target_run_id_does_not_track_service() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-ft1", Some("app1")))
+            .unwrap();
+        let mut run = make_run("run-ft1", "svc-ft1", RunStatus::Running);
+        run.log_dir = "/tmp/logs/run-ft1".to_string();
+        db.create_run(&run).unwrap();
+
+        // Resolving by an exact run ID yields a Run target (no restart tracking).
+        match db.resolve_follow_target("run-ft1").unwrap() {
+            FollowTarget::Run(r) => {
+                assert_eq!(r.id, "run-ft1");
+                assert_eq!(r.log_dir, "/tmp/logs/run-ft1");
+            }
+            other => panic!("expected Run target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_follow_target_service_tracks_latest_run() {
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-ft2", Some("app2")))
+            .unwrap();
+        let mut run = make_run("run-ft2", "svc-ft2", RunStatus::Running);
+        run.log_dir = "/tmp/logs/run-ft2".to_string();
+        db.create_run(&run).unwrap();
+
+        // Resolving by service ID yields a Service target carrying the service id.
+        match db.resolve_follow_target("svc-ft2").unwrap() {
+            FollowTarget::Service {
+                service_id,
+                current,
+            } => {
+                assert_eq!(service_id, "svc-ft2");
+                assert_eq!(current.id, "run-ft2");
+            }
+            other => panic!("expected Service target, got {other:?}"),
+        }
+
+        // Resolving by service name yields the same Service target.
+        match db.resolve_follow_target("app2").unwrap() {
+            FollowTarget::Service { service_id, .. } => assert_eq!(service_id, "svc-ft2"),
+            other => panic!("expected Service target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_latest_run_switches_to_new_run_after_restart() {
+        // Models the restart scenario: a follower tracking a service must be
+        // able to discover the new run created on `brainlog restart`.
+        let db = Database::open_in_memory().unwrap();
+        db.create_service(&make_service("svc-ft3", Some("app3")))
+            .unwrap();
+
+        let mut old = make_run("run-old", "svc-ft3", RunStatus::Completed);
+        old.log_dir = "/tmp/logs/run-old".to_string();
+        db.create_run(&old).unwrap();
+
+        let mut new = make_run("run-new", "svc-ft3", RunStatus::Running);
+        new.log_dir = "/tmp/logs/run-new".to_string();
+        db.create_run(&new).unwrap();
+
+        // The latest run is the newly started (running) one, with its own log dir.
+        let latest = db.get_latest_run("svc-ft3").unwrap().unwrap();
+        assert_eq!(latest.id, "run-new");
+        assert_eq!(latest.log_dir, "/tmp/logs/run-new");
     }
 
     #[test]

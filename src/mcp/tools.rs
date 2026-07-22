@@ -19,6 +19,7 @@ pub fn list_recent_runs(
     db: &Database,
     params: ListRecentRunsParams,
 ) -> Result<ListRecentRunsResponse> {
+    crate::storage::reconcile_stale_runs(db)?;
     let limit = params.limit.unwrap_or(20);
     let tail_lines = params.tail_lines.unwrap_or(0);
 
@@ -61,6 +62,7 @@ pub fn discover_services(
     db: &Database,
     params: DiscoverServicesParams,
 ) -> Result<serde_json::Value> {
+    crate::storage::reconcile_stale_runs(db)?;
     let group = params.group.unwrap_or(true);
 
     if group {
@@ -287,6 +289,7 @@ fn discover_services_flat(
 }
 
 pub fn get_logs(db: &Database, params: GetLogsParams) -> Result<GetLogsResponse> {
+    crate::storage::reconcile_stale_runs(db)?;
     let stream = params.stream.unwrap_or_default();
     let mode = params.mode.unwrap_or_default();
     let lines = params.lines.unwrap_or(100);
@@ -518,6 +521,7 @@ pub fn kill_service_resolve(
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
 
+    crate::storage::reconcile_stale_runs(db)?;
     let sig = parse_signal(params.signal.as_deref().unwrap_or("TERM"))?;
 
     let (service, _) = resolve_service(db, &params.id)?;
@@ -697,6 +701,7 @@ pub fn restart_service(
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
 
+    crate::storage::reconcile_stale_runs(db)?;
     let (service, _) = resolve_service(db, &params.id)?;
     let service_name = service
         .name

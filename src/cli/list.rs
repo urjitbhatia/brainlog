@@ -160,6 +160,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 pub async fn handle_list(args: ListArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
+    crate::storage::reconcile_stale_runs(&db)?;
 
     // Drill-down mode: `brainlog list <id>`
     if let Some(ref target) = args.id {

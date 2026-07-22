@@ -12,6 +12,7 @@ use crate::storage::Database;
 pub async fn handle_kill(args: KillArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
+    crate::storage::reconcile_stale_runs(&db)?;
 
     let signal = if args.force {
         Signal::SIGKILL

@@ -20,6 +20,7 @@ struct SearchResultJson {
 pub async fn handle_search(args: SearchArgs) -> Result<()> {
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
+    crate::storage::reconcile_stale_runs(&db)?;
     let pattern = Regex::new(&args.pattern)?;
 
     // --- Metadata search (unless --logs-only) ---

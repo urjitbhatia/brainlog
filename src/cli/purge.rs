@@ -57,6 +57,7 @@ pub async fn handle_purge(args: PurgeArgs) -> Result<()> {
 
     let config = Config::load()?;
     let db = Database::open(&config.db_path())?;
+    crate::storage::reconcile_stale_runs(&db)?;
 
     let mut candidates = db.find_purgeable_services(&cutoff, args.force)?;
 

@@ -153,6 +153,36 @@ impl Database {
         Ok(())
     }
 
+    /// List all runs currently marked as running.
+    pub fn list_running_runs(&self) -> Result<Vec<Run>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, service_id, pid, started_at, ended_at, exit_code, log_dir, status, wrapper_pid
+             FROM runs WHERE status = 'running'",
+        )?;
+        let runs = stmt
+            .query_map([], row_to_run)?
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to list running runs")?;
+        Ok(runs)
+    }
+
+    /// Transition a run out of `running` with an explicit `ended_at`.
+    /// Only touches the row if it is still marked running, so a status update
+    /// racing in from a live wrapper is never clobbered.
+    /// Returns true if the row was updated.
+    pub fn finalize_stale_run(
+        &self,
+        run_id: &str,
+        status: &RunStatus,
+        ended_at: chrono::DateTime<Utc>,
+    ) -> Result<bool> {
+        let updated = self.conn.execute(
+            "UPDATE runs SET status = ?1, ended_at = ?2 WHERE id = ?3 AND status = 'running'",
+            params![status.as_str(), ended_at.to_rfc3339(), run_id],
+        )?;
+        Ok(updated > 0)
+    }
+
     pub fn update_run_pid(&self, run_id: &str, pid: u32) -> Result<()> {
         self.conn.execute(
             "UPDATE runs SET pid = ?1 WHERE id = ?2",

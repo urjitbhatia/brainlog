@@ -7,6 +7,7 @@ use std::io::IsTerminal;
 use crate::cli::KillArgs;
 use crate::config::Config;
 use crate::storage::models::RunStatus;
+use crate::storage::reconcile::is_wrapper_process;
 use crate::storage::Database;
 
 pub async fn handle_kill(args: KillArgs) -> Result<()> {
@@ -34,7 +35,7 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
     // where the child is short-lived but the brainlog wrapper is still alive)
     if run.status != RunStatus::Running {
         if let Some(wrapper_pid) = run.wrapper_pid {
-            if is_process_alive(wrapper_pid) {
+            if is_wrapper_process(wrapper_pid) {
                 return kill_wrapper(wrapper_pid, signal, service_name);
             }
         }
@@ -45,18 +46,13 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         );
     }
 
-    let pid = run
-        .pid
-        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no PID recorded", service_name))?;
-
     // For catchable signals, send to the wrapper and let it handle the child tree.
     // The wrapper's SIGTERM handler kills the child tree and exits cleanly.
     // For SIGKILL (uncatchable), we must kill the child tree directly.
     if signal != Signal::SIGKILL {
         if let Some(wrapper_pid) = run.wrapper_pid {
-            if is_process_alive(wrapper_pid) {
-                let nix_pid = Pid::from_raw(wrapper_pid as i32);
-                signal::kill(nix_pid, signal).map_err(|e| {
+            if is_wrapper_process(wrapper_pid) {
+                signal_and_continue(wrapper_pid, signal).map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to send {} to wrapper PID {}: {}",
                         signal,
@@ -84,7 +80,23 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
         }
     }
 
-    // Fallback: no wrapper, wrapper dead, or SIGKILL — kill child tree directly
+    // Fallback: no wrapper, wrapper dead, or SIGKILL — kill the process tree
+    // directly. Root at the child PID when one was recorded, otherwise at the
+    // wrapper, whose tree contains the child anyway. Runs stopped by job
+    // control (e.g. a backgrounded wrapper hit by SIGTTOU) often never got a
+    // child PID recorded, so the wrapper root is what makes them killable.
+    let pid = match run.pid {
+        Some(p) => p,
+        None => run
+            .wrapper_pid
+            .filter(|p| is_wrapper_process(*p))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Service '{}' has no PID recorded and no live wrapper process",
+                    service_name
+                )
+            })?,
+    };
     let tree = collect_process_tree(pid).await;
 
     let mut kill_order: Vec<u32> = tree.iter().copied().filter(|&p| p != pid).collect();
@@ -95,8 +107,7 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
     let mut fail_count = 0;
 
     for target_pid in &kill_order {
-        let nix_pid = Pid::from_raw(*target_pid as i32);
-        match signal::kill(nix_pid, signal) {
+        match signal_and_continue(*target_pid, signal) {
             Ok(()) => {
                 success_count += 1;
             }
@@ -113,7 +124,7 @@ pub async fn handle_kill(args: KillArgs) -> Result<()> {
     // For SIGKILL, also kill the wrapper since it can't catch the signal itself
     if signal == Signal::SIGKILL {
         if let Some(wrapper_pid) = run.wrapper_pid {
-            if is_process_alive(wrapper_pid) {
+            if is_wrapper_process(wrapper_pid) {
                 let nix_pid = Pid::from_raw(wrapper_pid as i32);
                 let _ = signal::kill(nix_pid, Signal::SIGKILL);
             }
@@ -169,10 +180,21 @@ pub fn is_process_alive(pid: u32) -> bool {
     signal::kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
+/// Send a signal, then SIGCONT so a job-control-stopped process (e.g. a
+/// backgrounded wrapper stopped by SIGTTOU) wakes up to act on it. SIGKILL
+/// terminates stopped processes on its own, so no follow-up is needed there.
+pub fn signal_and_continue(pid: u32, signal: Signal) -> nix::Result<()> {
+    let nix_pid = Pid::from_raw(pid as i32);
+    signal::kill(nix_pid, signal)?;
+    if signal != Signal::SIGKILL && signal != Signal::SIGCONT {
+        let _ = signal::kill(nix_pid, Signal::SIGCONT);
+    }
+    Ok(())
+}
+
 /// Send a signal to the brainlog wrapper process (used when no child is running).
 fn kill_wrapper(wrapper_pid: u32, signal: Signal, service_name: &str) -> Result<()> {
-    let nix_pid = Pid::from_raw(wrapper_pid as i32);
-    signal::kill(nix_pid, signal).map_err(|e| {
+    signal_and_continue(wrapper_pid, signal).map_err(|e| {
         anyhow::anyhow!(
             "Failed to send {} to wrapper PID {}: {}",
             signal,

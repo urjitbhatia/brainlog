@@ -5,11 +5,12 @@ use serde::Serialize;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::cli::kill::{is_process_alive, resolve_service};
+use crate::cli::kill::resolve_service;
 use crate::cli::ListArgs;
 use crate::config::Config;
 use crate::storage::logfile::log_sizes;
 use crate::storage::models::RunStatus;
+use crate::storage::reconcile::is_wrapper_process;
 use crate::storage::Database;
 
 /// JSON output struct for a service in the list command.
@@ -77,7 +78,7 @@ fn wrapper_aware_status(run: &crate::storage::models::Run) -> String {
         return "running".to_string();
     }
     if let Some(wrapper_pid) = run.wrapper_pid {
-        if is_process_alive(wrapper_pid) {
+        if is_wrapper_process(wrapper_pid) {
             return "restarting".to_string();
         }
     }
@@ -350,7 +351,7 @@ fn handle_list_json(db: &Database, services: &[crate::storage::models::Service])
             if let Some(run) = db.get_latest_run(&service.id)? {
                 let run_ports = db.get_ports(&run.id)?;
                 let port_nums: Vec<u16> = run_ports.iter().map(|p| p.port).collect();
-                let alive = run.wrapper_pid.map(is_process_alive).unwrap_or(false);
+                let alive = run.wrapper_pid.map(is_wrapper_process).unwrap_or(false);
                 (
                     Some(RunJson {
                         id: run.id.clone(),
@@ -613,7 +614,7 @@ fn group_wrapper_aware_status(
                 return "running".to_string();
             }
             if let Some(wrapper_pid) = run.wrapper_pid {
-                if is_process_alive(wrapper_pid) {
+                if is_wrapper_process(wrapper_pid) {
                     return "restarting".to_string();
                 }
             }

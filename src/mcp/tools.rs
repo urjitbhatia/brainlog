@@ -516,10 +516,10 @@ pub fn kill_service_resolve(
     db: &Database,
     params: &KillServiceParams,
 ) -> Result<KillServiceResolved> {
-    use crate::cli::kill::{is_process_alive, resolve_service};
+    use crate::cli::kill::{resolve_service, signal_and_continue};
     use crate::storage::models::RunStatus;
-    use nix::sys::signal::{self, Signal};
-    use nix::unistd::Pid;
+    use crate::storage::reconcile::is_wrapper_process;
+    use nix::sys::signal::Signal;
 
     crate::storage::reconcile_stale_runs(db)?;
     let sig = parse_signal(params.signal.as_deref().unwrap_or("TERM"))?;
@@ -537,9 +537,8 @@ pub fn kill_service_resolve(
     // If child isn't running, try the wrapper PID
     if run.status != RunStatus::Running {
         if let Some(wrapper_pid) = run.wrapper_pid {
-            if is_process_alive(wrapper_pid) {
-                let nix_pid = Pid::from_raw(wrapper_pid as i32);
-                signal::kill(nix_pid, sig).map_err(|e| {
+            if is_wrapper_process(wrapper_pid) {
+                signal_and_continue(wrapper_pid, sig).map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to send {} to wrapper PID {}: {}",
                         sig,
@@ -574,16 +573,11 @@ pub fn kill_service_resolve(
         );
     }
 
-    let pid = run
-        .pid
-        .ok_or_else(|| anyhow::anyhow!("Service '{}' has no PID recorded", service_name))?;
-
     // For catchable signals, send to wrapper and let it handle the child tree.
     if sig != Signal::SIGKILL {
         if let Some(wrapper_pid) = run.wrapper_pid {
-            if is_process_alive(wrapper_pid) {
-                let nix_pid = Pid::from_raw(wrapper_pid as i32);
-                signal::kill(nix_pid, sig).map_err(|e| {
+            if is_wrapper_process(wrapper_pid) {
+                signal_and_continue(wrapper_pid, sig).map_err(|e| {
                     anyhow::anyhow!(
                         "Failed to send {} to wrapper PID {}: {}",
                         sig,
@@ -614,7 +608,21 @@ pub fn kill_service_resolve(
         }
     }
 
-    // Fallback: SIGKILL or no wrapper — async phase will kill child tree directly
+    // Fallback: SIGKILL or no wrapper — async phase will kill the process tree
+    // directly. Root at the child PID when one was recorded, otherwise at the
+    // wrapper, whose tree contains the child anyway.
+    let pid = match run.pid {
+        Some(p) => p,
+        None => run
+            .wrapper_pid
+            .filter(|p| is_wrapper_process(*p))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Service '{}' has no PID recorded and no live wrapper process",
+                    service_name
+                )
+            })?,
+    };
     Ok(KillServiceResolved {
         service_name,
         service_id: service.id,
@@ -629,7 +637,8 @@ pub fn kill_service_resolve(
 ///
 /// Only runs when the resolve phase couldn't handle it (SIGKILL or no wrapper).
 pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceResponse> {
-    use crate::cli::kill::{collect_process_tree, is_process_alive};
+    use crate::cli::kill::{collect_process_tree, signal_and_continue};
+    use crate::storage::reconcile::is_wrapper_process;
     use nix::sys::signal::{self, Signal};
     use nix::unistd::Pid;
 
@@ -651,8 +660,7 @@ pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceRe
 
     let mut signaled = Vec::new();
     for target_pid in &kill_order {
-        let nix_pid = Pid::from_raw(*target_pid as i32);
-        if signal::kill(nix_pid, resolved.signal).is_ok() {
+        if signal_and_continue(*target_pid, resolved.signal).is_ok() {
             signaled.push(*target_pid);
         }
     }
@@ -660,7 +668,7 @@ pub async fn kill_service(resolved: KillServiceResolved) -> Result<KillServiceRe
     // For SIGKILL, also kill the wrapper since it can't catch the signal itself
     if resolved.signal == Signal::SIGKILL {
         if let Some(wrapper_pid) = resolved.wrapper_pid {
-            if is_process_alive(wrapper_pid) {
+            if is_wrapper_process(wrapper_pid) {
                 let nix_pid = Pid::from_raw(wrapper_pid as i32);
                 let _ = signal::kill(nix_pid, Signal::SIGKILL);
             }
@@ -696,10 +704,10 @@ pub fn restart_service(
     db: &Database,
     params: RestartServiceParams,
 ) -> Result<RestartServiceResponse> {
-    use crate::cli::kill::resolve_service;
+    use crate::cli::kill::{resolve_service, signal_and_continue};
     use crate::storage::models::RunStatus;
-    use nix::sys::signal::{self, Signal};
-    use nix::unistd::Pid;
+    use crate::storage::reconcile::is_wrapper_process;
+    use nix::sys::signal::Signal;
 
     crate::storage::reconcile_stale_runs(db)?;
     let (service, _) = resolve_service(db, &params.id)?;
@@ -727,8 +735,15 @@ pub fn restart_service(
         )
     })?;
 
-    let nix_pid = Pid::from_raw(wrapper_pid as i32);
-    signal::kill(nix_pid, Signal::SIGUSR1).map_err(|e| {
+    if !is_wrapper_process(wrapper_pid) {
+        anyhow::bail!(
+            "Service '{}' has no live wrapper process (PID {} is gone)",
+            service_name,
+            wrapper_pid
+        );
+    }
+
+    signal_and_continue(wrapper_pid, Signal::SIGUSR1).map_err(|e| {
         anyhow::anyhow!(
             "Failed to send SIGUSR1 to wrapper PID {}: {}",
             wrapper_pid,

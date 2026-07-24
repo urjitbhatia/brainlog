@@ -39,3 +39,13 @@ jobs:
 
       - name: Run tests
         run: cargo nextest run
+
+      # docs/skill/SKILL.md is the copy published on the website. Catch drift
+      # here rather than silently shipping a stale skill to visitors.
+      - name: Agent skill copy is in sync
+        run: |
+          if ! diff -u .claude/skills/brainlog-guide/SKILL.md docs/skill/SKILL.md; then
+            echo "::error::docs/skill/SKILL.md is out of sync with .claude/skills/brainlog-guide/SKILL.md."
+            echo "Run: cp .claude/skills/brainlog-guide/SKILL.md docs/skill/SKILL.md"
+            exit 1
+          fi

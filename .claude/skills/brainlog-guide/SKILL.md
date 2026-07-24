@@ -1,3 +1,8 @@
+---
+name: brainlog-guide
+description: Read and control terminal commands captured by Brainlog via MCP — stdout, stderr, and stdin from dev servers, builds, tests, watchers, and any wrapped process. Use when the user says something is failing, crashing, hanging, or erroring; when you need output from a command running in another terminal instead of asking them to paste it; after kicking off a long-running or background command; to block until a server prints "listening"/"ready"; to regex-search logs for errors across every tracked process; or to kill, restart, and discover running services. Triggers on "what's running?", "what just ran?", "the server is broken", "check the logs", "the build failed".
+---
+
 # Brainlog Guide
 
 You have access to Brainlog via MCP. Brainlog wraps terminal commands and captures their stdout, stderr, and stdin — so you can read what commands have printed without asking the user to copy-paste.

@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - "docs/**"
+      - ".claude/skills/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -31,6 +32,14 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+
+      # Publish the agent skill straight from its source of truth so the
+      # downloadable copy can never drift from .claude/skills/. Nothing is
+      # committed under docs/ — the copy exists only in the built artifact.
+      - name: Vendor the agent skill into the site
+        run: |
+          mkdir -p docs/skill
+          cp .claude/skills/brainlog-guide/SKILL.md docs/skill/SKILL.md
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

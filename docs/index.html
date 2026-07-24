@@ -343,6 +343,47 @@
       font-weight: 500;
     }
 
+    .hero-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-3);
+      flex-wrap: wrap;
+      margin: calc(var(--space-10) * -1 + var(--space-6)) auto 0;
+      font-size: 0.875rem;
+      text-align: center;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: var(--space-1) var(--space-3);
+      border: 1px solid var(--border-teal);
+      border-radius: 999px;
+      background: rgba(123, 181, 160, 0.08);
+      color: var(--teal-light);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    .hero-note-text {
+      color: var(--text-muted);
+    }
+
+    .hero-note-text a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      border-bottom: 1px solid var(--border-amber);
+      transition: color 0.2s ease, border-color 0.2s ease;
+    }
+
+    .hero-note-text a:hover {
+      color: var(--amber-light);
+      border-bottom-color: var(--amber);
+    }
+
     .hero-actions {
       display: flex;
       align-items: center;
@@ -578,6 +619,10 @@
       font-size: 0.875rem;
       color: var(--text-code);
       flex: 1;
+      /* Flex items default to min-width:auto, so a long unbreakable install
+         URL would push the page wider than the viewport on small screens. */
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
 
     .install-cmd .copy-btn {
@@ -589,6 +634,77 @@
       margin-top: var(--space-3);
       font-size: 0.8125rem;
       color: var(--text-muted);
+    }
+
+    /* ─── Agent Skill ───────────────────────────────────────────────────── */
+    .skill-card {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-8);
+      align-items: start;
+      background: var(--bg-card);
+      border: 1px solid var(--border-teal);
+      border-radius: var(--radius-lg);
+      padding: var(--space-8);
+      margin-top: var(--space-8);
+      box-shadow: var(--glow-teal);
+    }
+
+    @media (max-width: 800px) {
+      .skill-card { grid-template-columns: 1fr; gap: var(--space-6); }
+    }
+
+    .skill-lead {
+      color: var(--text-secondary);
+      line-height: 1.7;
+      margin: 0;
+    }
+
+    .skill-lead em {
+      color: var(--text-primary);
+      font-style: normal;
+      font-weight: 500;
+    }
+
+    .skill-copy code,
+    .skill-install .install-note code {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      color: var(--teal-light);
+    }
+
+    .skill-list {
+      list-style: none;
+      margin: var(--space-6) 0 0;
+      padding: 0;
+      display: grid;
+      gap: var(--space-3);
+    }
+
+    .skill-list li {
+      position: relative;
+      padding-left: var(--space-6);
+      font-size: 0.9375rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    .skill-list li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.55em;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--teal);
+    }
+
+    .skill-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      margin-top: var(--space-6);
     }
 
     /* ─── Features ──────────────────────────────────────────────────────── */
@@ -1259,6 +1375,7 @@
         <li><a href="#features">Features</a></li>
         <li><a href="#wait-for-pattern">wait_for_pattern</a></li>
         <li><a href="#quickstart">Quick Start</a></li>
+        <li><a href="#skill">Skill</a></li>
         <li><a href="#cli">CLI</a></li>
         <li><a href="#mcp-tools">MCP Tools</a></li>
         <li><a href="#how-it-works">How It Works</a></li>
@@ -1295,6 +1412,12 @@
         <p class="hero-tagline fade-in">
           Transparent process wrapper that captures <em>stdout</em>, <em>stderr</em>, and <em>stdin</em> —
           with an MCP server so LLM agents can read your terminal output.
+        </p>
+        <p class="hero-note fade-in">
+          <span class="hero-badge">v1.0 &middot; production ready</span>
+          <span class="hero-note-text">
+            Pair it with the <a href="#skill">agent skill</a> for the best results.
+          </span>
         </p>
         <div class="hero-actions fade-in">
           <a class="btn-primary" href="#install">
@@ -1424,12 +1547,12 @@
           </article>
 
           <article class="feature-card fade-in" aria-labelledby="feat5-title">
-            <div class="feature-icon">
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+            <div class="feature-icon amber" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#C98B5C" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="2" y="3" width="16" height="6" rx="1"/>
                 <rect x="2" y="11" width="16" height="6" rx="1"/>
-                <circle cx="5" cy="6" r="0.5" fill="currentColor"/>
-                <circle cx="5" cy="14" r="0.5" fill="currentColor"/>
+                <circle cx="5" cy="6" r="0.5" fill="#C98B5C"/>
+                <circle cx="5" cy="14" r="0.5" fill="#C98B5C"/>
               </svg>
             </div>
             <h3 class="feature-title" id="feat5-title">Daemon mode</h3>
@@ -1437,6 +1560,23 @@
               Hand a command to <code style="font-family:var(--font-mono);color:var(--teal-light);font-size:0.8em">brainlog -D</code> and get your shell back
               instantly. A singleton daemon supervises detached wrappers, so
               services outlive your terminal.
+            </p>
+          </article>
+
+          <article class="feature-card fade-in" aria-labelledby="feat6-title">
+            <div class="feature-icon teal" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#7BB5A0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="10" cy="10" r="7"/>
+                <path d="M7 10l2 2 4-4"/>
+              </svg>
+            </div>
+            <h3 class="feature-title" id="feat6-title">Status you can trust</h3>
+            <p class="feature-desc">
+              <code style="font-family:var(--font-mono);color:var(--teal-light);font-size:0.8em">running</code> means actually running. Records are
+              reconciled against live processes on every read, so a wrapper killed
+              by <code style="font-family:var(--font-mono);color:var(--amber-light);font-size:0.8em">SIGKILL</code> or lost with its terminal
+              self-heals to <code style="font-family:var(--font-mono);color:var(--amber-light);font-size:0.8em">crashed</code> instead of lingering
+              as a phantom service.
             </p>
           </article>
         </div>
@@ -1736,6 +1876,73 @@
       </div>
     </section>
 
+    <!-- Agent Skill -->
+    <section id="skill" aria-labelledby="skill-heading">
+      <div class="container">
+        <div class="section-header fade-in">
+          <span class="section-label">Agent Skill</span>
+          <h2 class="section-heading" id="skill-heading">Brainlog + the skill = agents that actually know</h2>
+          <p class="section-sub">
+            The MCP server gives your agent the tools. The skill teaches it <em>when</em> to reach for them.
+            Together they are how agents get the most out of brainlog.
+          </p>
+        </div>
+
+        <div class="skill-card fade-in">
+          <div class="skill-copy">
+            <p class="skill-lead">
+              Connecting the MCP server alone leaves your agent guessing. The skill closes that gap — it
+              teaches the agent to check brainlog <em>first</em> when you say a build failed or a server is
+              crashing, to wait on a real readiness line instead of sleeping, and to suggest
+              <code>brainlog &lt;cmd&gt;</code> when it needs output it cannot see.
+            </p>
+            <ul class="skill-list">
+              <li>Reads your dev server's output instead of asking you to paste it</li>
+              <li>Blocks on <code>wait_for_pattern</code> until a service is genuinely ready</li>
+              <li>Searches every tracked process for the error, not just the one you mentioned</li>
+              <li>Knows when to reach for daemon mode, kill, and restart</li>
+            </ul>
+          </div>
+
+          <div class="skill-install">
+            <div class="install-option-label">Install for Claude Code</div>
+            <div class="install-cmd">
+              <code>mkdir -p .claude/skills/brainlog-guide &amp;&amp; curl -fsSL https://raw.githubusercontent.com/urjitbhatia/brainlog/master/.claude/skills/brainlog-guide/SKILL.md -o .claude/skills/brainlog-guide/SKILL.md</code>
+              <button
+                class="copy-btn"
+                aria-label="Copy skill install command to clipboard"
+                data-copy="mkdir -p .claude/skills/brainlog-guide &amp;&amp; curl -fsSL https://raw.githubusercontent.com/urjitbhatia/brainlog/master/.claude/skills/brainlog-guide/SKILL.md -o .claude/skills/brainlog-guide/SKILL.md"
+              >copy</button>
+            </div>
+            <p class="install-note">
+              Drops <code>SKILL.md</code> into your project. Use <code>~/.claude/skills/</code> instead to make it
+              available everywhere.
+            </p>
+
+            <div class="skill-actions">
+              <a class="btn-secondary" href="skill/SKILL.md" download>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M7.47 10.78a.75.75 0 001.06 0l3.75-3.75a.75.75 0 00-1.06-1.06L8.75 8.44V1.75a.75.75 0 00-1.5 0v6.69L4.78 5.97a.75.75 0 00-1.06 1.06l3.75 3.75zM1.75 13.25a.75.75 0 000 1.5h12.5a.75.75 0 000-1.5H1.75z"/>
+                </svg>
+                Download SKILL.md
+              </a>
+              <a
+                class="btn-secondary"
+                href="https://github.com/urjitbhatia/brainlog/tree/master/.claude/skills/brainlog-guide"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                </svg>
+                View source
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- CLI -->
     <section id="cli" aria-labelledby="cli-heading">
       <div class="container">
@@ -1761,7 +1968,7 @@
               <div><span class="hl-amber">brainlog</span> logs my-api</div>
               <div><span class="comment"># Last 50 lines</span></div>
               <div><span class="hl-amber">brainlog</span> logs my-api --tail 50</div>
-              <div><span class="comment"># Follow (like tail -f)</span></div>
+              <div><span class="comment"># Follow (like tail -f) — keeps following across restarts</span></div>
               <div><span class="hl-amber">brainlog</span> logs my-api -f</div>
               <div><span class="comment"># Stderr only</span></div>
               <div><span class="hl-amber">brainlog</span> logs my-api -s stderr</div>

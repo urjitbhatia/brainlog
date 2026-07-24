@@ -16,7 +16,7 @@
       /* Brand */
       --amber:         #C98B5C;
       --amber-light:   #D9A578;
-      --amber-dim:     #9B6840;
+      --amber-dim:     #B57A4E;
       --teal:          #7BB5A0;
       --teal-light:    #9ECEBB;
       --teal-dim:      #5A8E7C;
@@ -34,9 +34,12 @@
       --border-teal:   rgba(123, 181, 160, 0.30);
 
       /* Text */
+      /* Measured against --bg-card, the darkest surface these sit on:
+         primary 12.3:1, secondary 6.6:1, muted 4.7:1 — all clear the WCAG AA
+         4.5:1 floor for body text. Darkening any of them will regress it. */
       --text-primary:  #E6EDF3;
-      --text-secondary:#8B949E;
-      --text-muted:    #5A6472;
+      --text-secondary:#A6B0BB;
+      --text-muted:    #8B949E;
       --text-code:     #C9D1D9;
 
       /* Effects */

@@ -33,10 +33,10 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      # Publish the agent skill straight from its source of truth so the
-      # downloadable copy can never drift from .claude/skills/. Nothing is
-      # committed under docs/ — the copy exists only in the built artifact.
-      - name: Vendor the agent skill into the site
+      # docs/skill/SKILL.md is committed so it is served no matter how Pages
+      # is configured. Refresh it from the source of truth at build time so
+      # the published copy is current even if the committed one lagged.
+      - name: Sync the agent skill into the site
         run: |
           mkdir -p docs/skill
           cp .claude/skills/brainlog-guide/SKILL.md docs/skill/SKILL.md
